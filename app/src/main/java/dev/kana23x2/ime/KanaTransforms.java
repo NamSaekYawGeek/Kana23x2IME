@@ -2,6 +2,7 @@ package dev.kana23x2.ime;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.text.Normalizer;
 
 public final class KanaTransforms {
     private KanaTransforms() {}
@@ -103,6 +104,15 @@ public final class KanaTransforms {
             else out.appendCodePoint(cp);
         });
         return out.toString();
+    }
+
+    /** Canonical dictionary reading without losing voiced or semi-voiced kana. */
+    public static String normalizeReading(String text) {
+        if (text == null || text.isEmpty()) return "";
+        // Decompose first so even ヷ/ヸ/ヹ/ヺ can use the ordinary kana mapping.
+        // Preserve marks without precomposed forms, e.g. わ + combining dakuten.
+        String decomposed = Normalizer.normalize(text, Normalizer.Form.NFD);
+        return Normalizer.normalize(toHiragana(decomposed), Normalizer.Form.NFC);
     }
 
     private static final class Tail {

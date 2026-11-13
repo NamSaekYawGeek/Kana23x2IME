@@ -1,0 +1,50 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/ios-*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test dictionary generator
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Test Swift keyboard core
+        run: swift test --package-path ios
+      - name: Build shared offline dictionary
+        run: python3 tools/build_dictionary.py --output ios/Keyboard/Resources/skk_compact.tsv
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/project.yml
+      - name: Build simulator app and keyboard extension
+        run: >-
+          xcodebuild -project ios/Kana23x2.xcodeproj -scheme Kana23x2
+          -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath ios/build/simulator
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Build unsigned device app and keyboard extension
+        run: >-
+          xcodebuild -project ios/Kana23x2.xcodeproj -scheme Kana23x2
+          -configuration Release -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath ios/build/device
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Package build outputs
+        run: |
+          ditto -c -k --keepParent ios/build/simulator/Build/Products/Debug-iphonesimulator/Kana23x2.app ios/Kana23x2-simulator.zip
+          ditto -c -k --keepParent ios/build/device/Build/Products/Release-iphoneos/Kana23x2.app ios/Kana23x2-device-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kana23x2-iOS
+          path: ios/Kana23x2-*.zip
+          if-no-files-found: error

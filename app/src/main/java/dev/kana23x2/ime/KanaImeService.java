@@ -61,7 +61,9 @@ public class KanaImeService extends InputMethodService {
     private boolean katakana = false;
     private String composing = "";
     private String previousWord = "";
-    private boolean sensitiveField = false;
+    private boolean sensitiveField = true;
+    private boolean inputActive = false;
+    private boolean learningEnabled = false;
 
     private CandidateEngine engine;
     private ClipboardManager clipboard;
@@ -142,7 +144,7 @@ public class KanaImeService extends InputMethodService {
         tools.addView(toolButton("⌨", v -> showKeyboard()), weighted());
         tools.addView(toolButton("😀", v -> showEmoji()), weighted());
         tools.addView(toolButton("📋", v -> showClipboard()), weighted());
-        tools.addView(toolButton("ー", v -> commitLiteral("ー")), weighted());
+        tools.addView(toolButton("ー", v -> inputComposing("ー")), weighted());
         tools.addView(toolButton("123", v -> showNumbers()), weighted());
         tools.addView(toolButton("符", v -> showSymbols("和")), weighted());
         stateLabel = toolButton("", v -> {
@@ -332,7 +334,11 @@ public class KanaImeService extends InputMethodService {
 
     private void inputKana(int index) {
         showKeyboard();
-        composing += currentKana(index);
+        inputComposing(currentKana(index));
+    }
+
+    private void inputComposing(String text) {
+        composing += text;
         syncComposing();
     }
 
@@ -353,8 +359,9 @@ public class KanaImeService extends InputMethodService {
     private void syncComposing() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
+        // Empty composing text must replace the old composing span before finishing it.
+        ic.setComposingText(composing, 1);
         if (composing.isEmpty()) ic.finishComposingText();
-        else ic.setComposingText(composing, 1);
         updateCandidates();
     }
 
@@ -367,12 +374,21 @@ public class KanaImeService extends InputMethodService {
             return;
         }
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) ic.deleteSurroundingText(1, 0);
+        if (ic == null) return;
+        CharSequence selected = ic.getSelectedText(0);
+        if (selected != null && selected.length() > 0) {
+            ic.commitText("", 1);
+        } else if (!ic.deleteSurroundingTextInCodePoints(1, 0)) {
+            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+        }
     }
 
     private void spaceOrConvert() {
         if (!composing.isEmpty()) {
-            List<CandidateEngine.Candidate> cands = engine.candidates(composing, previousWord, 1);
+            List<CandidateEngine.Candidate> cands = sensitiveField
+                    ? java.util.Collections.emptyList()
+                    : engine.candidates(composing, previousWord, 1);
             if (!cands.isEmpty() && !"かな".equals(cands.get(0).note)) {
                 chooseCandidate(cands.get(0));
                 return;
@@ -388,7 +404,8 @@ public class KanaImeService extends InputMethodService {
         if (ic == null) return;
         EditorInfo info = getCurrentInputEditorInfo();
         int action = info == null ? EditorInfo.IME_ACTION_NONE : (info.imeOptions & EditorInfo.IME_MASK_ACTION);
-        if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+        if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED
+                && (info.imeOptions & EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0) {
             ic.performEditorAction(action);
         } else {
             ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
@@ -422,8 +439,10 @@ public class KanaImeService extends InputMethodService {
         if (ic == null || c == null) return;
         String typedReading = composing;
         ic.commitText(c.text, 1);
-        engine.remember(c.sourceReading == null || c.sourceReading.isEmpty() ? typedReading : c.sourceReading,
-                c.text, previousWord);
+        if (learningEnabled) {
+            engine.remember(c.sourceReading == null || c.sourceReading.isEmpty() ? typedReading : c.sourceReading,
+                    c.text, previousWord);
+        }
         previousWord = c.text;
         composing = "";
         updateCandidates();
@@ -432,6 +451,7 @@ public class KanaImeService extends InputMethodService {
     private void updateCandidates() {
         if (candidateRow == null) return;
         candidateRow.removeAllViews();
+        if (sensitiveField) return;
 
         if (!engine.isReady() && composing.isEmpty()) {
             TextView loading = candidateChip("词典载入中…", null);
@@ -526,7 +546,11 @@ public class KanaImeService extends InputMethodService {
     }
 
     private void showClipboard() {
-        capturePrimaryClip();
+        showClipboard(true);
+    }
+
+    private void showClipboard(boolean capture) {
+        if (capture) capturePrimaryClip();
 
         LinearLayout outer = new LinearLayout(this);
         outer.setOrientation(LinearLayout.VERTICAL);
@@ -539,7 +563,7 @@ public class KanaImeService extends InputMethodService {
         head.addView(toolButton("↻", v -> showClipboard()), new LinearLayout.LayoutParams(dp(48), dp(36)));
         head.addView(toolButton("清", v -> {
             clipPrefs.edit().remove("history").apply();
-            showClipboard();
+            showClipboard(false);
         }), new LinearLayout.LayoutParams(dp(48), dp(36)));
         head.addView(toolButton("⌨", v -> showKeyboard()), new LinearLayout.LayoutParams(dp(48), dp(36)));
         outer.addView(head);
@@ -584,12 +608,13 @@ public class KanaImeService extends InputMethodService {
     }
 
     private void capturePrimaryClip() {
-        if (sensitiveField || clipboard == null || !clipboard.hasPrimaryClip()) return;
+        if (!inputActive || sensitiveField || clipboard == null) return;
         try {
+            if (!clipboard.hasPrimaryClip()) return;
             ClipDescription desc = clipboard.getPrimaryClipDescription();
-            if (Build.VERSION.SDK_INT >= 33 && desc != null) {
+            if (desc != null) {
                 boolean sensitive = desc.getExtras() != null &&
-                        desc.getExtras().getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false);
+                        desc.getExtras().getBoolean("android.content.extra.IS_SENSITIVE", false);
                 if (sensitive) return;
             }
             ClipData data = clipboard.getPrimaryClip();
@@ -711,7 +736,10 @@ public class KanaImeService extends InputMethodService {
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(columns);
         for (String s : values) {
-            TextView key = panelKey(s, v -> commitLiteral(s));
+            TextView key = panelKey(s, v -> {
+                if ("ー".equals(s)) inputComposing(s);
+                else commitLiteral(s);
+            });
             GridLayout.LayoutParams gp = new GridLayout.LayoutParams();
             gp.width = 0;
             gp.height = dp(48);
@@ -767,7 +795,10 @@ public class KanaImeService extends InputMethodService {
         super.onStartInput(attribute, restarting);
         composing = "";
         previousWord = "";
+        inputActive = true;
         sensitiveField = isSensitive(attribute);
+        learningEnabled = !sensitiveField && attribute != null
+                && (attribute.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0;
         updateCandidates();
     }
 
@@ -775,16 +806,43 @@ public class KanaImeService extends InputMethodService {
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         sensitiveField = isSensitive(info);
-        composing = "";
+        learningEnabled = !sensitiveField && info != null
+                && (info.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0;
         showKeyboard();
         refreshKeyboardLabels();
         updateCandidates();
     }
 
     @Override
+    public void onFinishInputView(boolean finishingInput) {
+        super.onFinishInputView(finishingInput);
+        composing = "";
+        updateCandidates();
+    }
+
+    @Override
     public void onFinishInput() {
         composing = "";
+        previousWord = "";
+        inputActive = false;
+        sensitiveField = true;
+        learningEnabled = false;
         super.onFinishInput();
+        updateCandidates();
+    }
+
+    @Override
+    public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
+                                  int candidatesStart, int candidatesEnd) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd,
+                candidatesStart, candidatesEnd);
+        if (!composing.isEmpty() && (newSelStart != candidatesEnd || newSelEnd != candidatesEnd)) {
+            composing = "";
+            previousWord = "";
+            InputConnection ic = getCurrentInputConnection();
+            if (ic != null) ic.finishComposingText();
+            updateCandidates();
+        }
     }
 
     private boolean isSensitive(EditorInfo info) {

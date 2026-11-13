@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+      - 'codex/ios-*'
+  pull_request:
 
 permissions:
   contents: write
@@ -31,6 +33,9 @@ jobs:
       - name: Build dictionary
         run: python3 tools/build_dictionary.py
 
+      - name: Run Android regression tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
@@ -41,6 +46,7 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Publish rolling dev APK
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
