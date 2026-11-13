@@ -64,9 +64,7 @@ public class CandidateEngine {
     }
 
     private String norm(String reading) {
-        return KanaTransforms.toHiragana(reading == null ? "" : reading)
-                .replace("\u3099", "")
-                .replace("\u309A", "");
+        return KanaTransforms.normalizeReading(reading);
     }
 
     public List<Candidate> candidates(String reading, String previousWord, int limit) {
@@ -156,6 +154,7 @@ public class CandidateEngine {
     }
 
     public List<Candidate> recentCandidates(int limit) {
+        if (limit <= 0) return Collections.emptyList();
         ArrayList<Candidate> out = new ArrayList<>();
         String old = prefs.getString("recent", "");
         if (old == null || old.isEmpty()) return out;

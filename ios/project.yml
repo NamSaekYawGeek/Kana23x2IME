@@ -1,0 +1,55 @@
+name: Kana23x2
+options:
+  bundleIdPrefix: dev.kana23x2
+  deploymentTarget:
+    iOS: '15.0'
+  xcodeVersion: '16.0'
+packages:
+  KanaCore:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: '0.2.0'
+    CURRENT_PROJECT_VERSION: '2'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Kana23x2:
+    type: application
+    platform: iOS
+    sources:
+      - path: Host
+        excludes: [Info.plist]
+      - path: ../THIRD_PARTY_NOTICES.md
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kana23x2.ios
+        INFOPLIST_FILE: Host/Info.plist
+    dependencies:
+      - target: KanaKeyboard
+        embed: true
+  KanaKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Keyboard
+        excludes: [Info.plist]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kana23x2.ios.keyboard
+        INFOPLIST_FILE: Keyboard/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - package: KanaCore
+schemes:
+  Kana23x2:
+    build:
+      targets:
+        Kana23x2: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -4,3 +4,11 @@ local.properties
 **/build/
 *.iml
 .DS_Store
+__pycache__/
+*.pyc
+ios/.build/
+ios/.swiftpm/
+ios/*.xcodeproj/
+ios/*.zip
+ios/Keyboard/Resources/skk_compact.tsv
+app/src/main/assets/skk_compact.tsv.gz

@@ -10,8 +10,8 @@ android {
         applicationId 'dev.kana23x2.ime'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
     }
 
     buildTypes {
@@ -24,8 +24,23 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all {
+            testLogging {
+                exceptionFormat = "full"
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+// Exercise the real InputConnection/composing lifecycle on the JVM.
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.14.1"
 }

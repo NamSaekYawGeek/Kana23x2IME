@@ -10,4 +10,4 @@ The original dictionary headers state GNU General Public License version 2 or (a
 
 Upstream: https://github.com/skk-dev/dict
 
-The GitHub Actions build downloads the upstream dictionaries and runs `tools/build_dictionary.py` before assembling the APK.
+The GitHub Actions builds download the upstream dictionaries and run `tools/build_dictionary.py` before assembling the Android APK or iOS app. Android uses gzip-compressed TSV; iOS uses the same normalized data in a sorted, uncompressed TSV for memory-mapped lookup. The generated dictionary is not checked into Git. The small modern-term fallback is maintained in this repository. The iOS host bundle includes this notice.
