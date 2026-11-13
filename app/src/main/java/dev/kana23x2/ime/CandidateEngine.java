@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,14 +30,43 @@ public class CandidateEngine {
         }
     }
 
-    private final Context context;
+    @FunctionalInterface
+    interface AssetOpener {
+        InputStream open(String name) throws IOException;
+    }
+
+    private final AssetOpener assets;
     private final SharedPreferences prefs;
     private final TreeMap<String, List<String>> dict = new TreeMap<>();
     private volatile boolean ready = false;
 
     public CandidateEngine(Context context) {
-        this.context = context.getApplicationContext();
+        this(context, name -> context.getApplicationContext().getAssets().open(name));
+    }
+
+    CandidateEngine(Context context, AssetOpener assets) {
+        this.assets = assets;
         this.prefs = context.getSharedPreferences("candidate_learning", Context.MODE_PRIVATE);
+    }
+
+    private InputStream openDictionary() throws IOException {
+        // AAPT transparently inflates .gz assets and packages them without the suffix.
+        // Source-tree assets (including some test runners) retain the compressed file.
+        try {
+            return assets.open("skk_compact.tsv");
+        } catch (IOException missingPlainAsset) {
+            InputStream compressed = assets.open("skk_compact.tsv.gz");
+            try {
+                return new GZIPInputStream(compressed);
+            } catch (IOException invalidGzip) {
+                try {
+                    compressed.close();
+                } catch (IOException closeFailure) {
+                    invalidGzip.addSuppressed(closeFailure);
+                }
+                throw invalidGzip;
+            }
+        }
     }
 
     public boolean isReady() { return ready; }
@@ -44,8 +75,8 @@ public class CandidateEngine {
         if (ready) return;
         synchronized (this) {
             if (ready) return;
-            try (GZIPInputStream gz = new GZIPInputStream(context.getAssets().open("skk_compact.tsv.gz"));
-                 BufferedReader br = new BufferedReader(new InputStreamReader(gz, StandardCharsets.UTF_8), 64 * 1024)) {
+            try (InputStream input = openDictionary();
+                 BufferedReader br = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8), 64 * 1024)) {
                 String line;
                 while ((line = br.readLine()) != null) {
                     String[] parts = line.split("\t");
