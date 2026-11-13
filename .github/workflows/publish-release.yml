@@ -1,0 +1,142 @@
+name: Publish verified release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.2.0
+        required: true
+        type: string
+      commit_sha:
+        description: Full commit SHA used by both successful builds
+        required: true
+        type: string
+      android_run_id:
+        description: Successful Build APK run ID
+        required: true
+        type: string
+      ios_run_id:
+        description: Successful Build iOS run ID
+        required: true
+        type: string
+      release_id:
+        description: Existing draft release ID targeting the same commit
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+      IOS_RUN_ID: ${{ inputs.ios_run_id }}
+      RELEASE_ID: ${{ inputs.release_id }}
+    steps:
+      - name: Verify source runs and draft release
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          def get(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{os.environ["GH_REPO"]}/{path}']))
+          tag, commit = os.environ['TAG'], os.environ['COMMIT_SHA']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+              raise SystemExit('Expected a vMAJOR.MINOR.PATCH tag and full lowercase commit SHA')
+          for key in ('ANDROID_RUN_ID', 'IOS_RUN_ID', 'RELEASE_ID'):
+              if not re.fullmatch(r'[1-9]\d*', os.environ[key]):
+                  raise SystemExit(f'Invalid {key}')
+          for key, path in [('ANDROID_RUN_ID', '.github/workflows/build.yml'), ('IOS_RUN_ID', '.github/workflows/ios.yml')]:
+              run = get('actions/runs/' + os.environ[key])
+              if (run['status'], run['conclusion'], run['head_sha'], run['path']) != ('completed', 'success', commit, path):
+                  raise SystemExit(f'{key} must be a successful expected workflow at {commit}')
+              if run['head_repository']['full_name'] != os.environ['GH_REPO']:
+                  raise SystemExit('Build must originate from this repository')
+          release = get('releases/' + os.environ['RELEASE_ID'])
+          if release['draft'] is not True or release['target_commitish'] != commit or release['tag_name'] != tag:
+              raise SystemExit('Release must be the matching draft at the tested commit')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Download verified build artifacts
+        run: |
+          gh run download "$ANDROID_RUN_ID" --name Kana23x2-debug-apk --dir artifacts/android
+          gh run download "$IOS_RUN_ID" --name Kana23x2-iOS --dir artifacts/ios
+      - name: Package and verify release files
+        run: |
+          mkdir -p release-files
+          cp artifacts/android/app-debug.apk "release-files/Kana23x2-${TAG}-android-debug.apk"
+          cp artifacts/ios/Kana23x2-simulator.zip "release-files/Kana23x2-${TAG}-ios-simulator.zip"
+          cp artifacts/ios/Kana23x2-device-unsigned.zip "release-files/Kana23x2-${TAG}-ios-device-unsigned.zip"
+          python3 tools/verify_android_apk.py "release-files/Kana23x2-${TAG}-android-debug.apk"
+          python3 - <<'PY'
+          import hashlib, json, os, plistlib, zipfile
+          from pathlib import Path
+          tag = os.environ['TAG']
+          root = Path('release-files')
+          for archive in root.glob('*.zip'):
+              with zipfile.ZipFile(archive) as z:
+                  if z.testzip() is not None:
+                      raise SystemExit(f'Corrupt archive: {archive}')
+                  host = plistlib.loads(z.read('Kana23x2.app/Info.plist'))
+                  extension = plistlib.loads(z.read('Kana23x2.app/PlugIns/KanaKeyboard.appex/Info.plist'))
+                  if any(p['CFBundleShortVersionString'] != tag[1:] for p in (host, extension)):
+                      raise SystemExit(f'Version mismatch: {archive}')
+                  if host['CFBundleVersion'] != extension['CFBundleVersion']:
+                      raise SystemExit(f'Host/extension build mismatch: {archive}')
+                  data = z.read('Kana23x2.app/PlugIns/KanaKeyboard.appex/skk_compact.tsv').decode('utf-8')
+                  rows = data.splitlines()
+                  if len(rows) <= 100_000 or not any('日本' in row.split('\t')[1:] for row in rows if row.startswith('にほん\t')):
+                      raise SystemExit(f'Full Japanese dictionary missing: {archive}')
+          def digest(p):
+              return hashlib.sha256(p.read_bytes()).hexdigest()
+          files = sorted(root.iterdir())
+          (root / 'SHA256SUMS.txt').write_text(''.join(f'{digest(p)}  {p.name}\n' for p in files), encoding='utf-8')
+          Path('expected-assets.json').write_text(json.dumps({p.name: {'size': p.stat().st_size, 'digest': 'sha256:' + digest(p)} for p in root.iterdir()}))
+          body = Path(f'docs/releases/{tag}.md').read_text(encoding='utf-8')
+          Path('release-update.json').write_text(json.dumps({'tag_name': tag, 'target_commitish': os.environ['COMMIT_SHA'], 'name': '23×2 Kana ' + tag, 'body': body, 'draft': True, 'prerelease': False}))
+          PY
+      - name: Upload files to the matching draft
+        run: |
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" --input release-update.json > /dev/null
+          gh release upload "$TAG" release-files/* --clobber
+      - name: Verify remote assets and publish
+        run: |
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" > release-remote.json
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          release = json.loads(Path('release-remote.json').read_text())
+          if release['draft'] is not True or release['target_commitish'] != os.environ['COMMIT_SHA'] or release['tag_name'] != os.environ['TAG']:
+              raise SystemExit('Draft release changed during upload')
+          expected = json.loads(Path('expected-assets.json').read_text())
+          actual = {a['name']: {'size': a['size'], 'digest': a.get('digest')} for a in release['assets']}
+          if actual != expected or any(a['state'] != 'uploaded' for a in release['assets']):
+              raise SystemExit('Uploaded asset names, sizes or SHA-256 digests do not match')
+          # An existing tag must not silently redirect this release to other code.
+          repo, tag = os.environ['GH_REPO'], os.environ['TAG']
+          ref = subprocess.run(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], capture_output=True, text=True)
+          if ref.returncode == 0:
+              obj = json.loads(ref.stdout)['object']
+              while obj['type'] == 'tag':
+                  obj = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/git/tags/{obj["sha"]}']))['object']
+              if obj['type'] != 'commit' or obj['sha'] != os.environ['COMMIT_SHA']:
+                  raise SystemExit('Existing tag does not match the tested commit')
+          elif 'HTTP 404' not in ref.stderr:
+              raise SystemExit(ref.stderr)
+          Path('release-publish.json').write_text(json.dumps({'tag_name': tag, 'target_commitish': os.environ['COMMIT_SHA'], 'draft': False, 'make_latest': 'true'}))
+          PY
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" --input release-publish.json --jq .html_url
