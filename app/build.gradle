@@ -26,6 +26,11 @@ android {
 
     testOptions {
         unitTests.includeAndroidResources = true
+        unitTests.all {
+            testLogging {
+                exceptionFormat = "full"
+            }
+        }
     }
 
     compileOptions {
