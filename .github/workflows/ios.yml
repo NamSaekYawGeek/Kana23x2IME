@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Test dictionary generator
+      - name: Test dictionary generator and IPA packaging
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
       - name: Test Swift keyboard core
         run: swift test --package-path ios
@@ -43,8 +43,23 @@ jobs:
         run: |
           ditto -c -k --keepParent ios/build/simulator/Build/Products/Debug-iphonesimulator/Kana23x2.app ios/Kana23x2-simulator.zip
           ditto -c -k --keepParent ios/build/device/Build/Products/Release-iphoneos/Kana23x2.app ios/Kana23x2-device-unsigned.zip
+          python3 tools/package_ios_ipa.py --app ios/build/device/Build/Products/Release-iphoneos/Kana23x2.app --output ios/Kana23x2-unsigned.ipa --require-full-dictionary
+          (cd ios && shasum -a 256 Kana23x2-unsigned.ipa > Kana23x2-unsigned.ipa.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: Kana23x2-iOS
-          path: ios/Kana23x2-*.zip
+          path: |
+            ios/Kana23x2-*.zip
+            ios/Kana23x2-unsigned.ipa
+            ios/Kana23x2-unsigned.ipa.sha256
           if-no-files-found: error
+      - name: Explain SideStore installation
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## iPhone / SideStore
+          Download **Kana23x2-iOS** from this run's Artifacts and extract the outer ZIP.
+          Import **Kana23x2-unsigned.ipa** into SideStore; keep the **KanaKeyboard** app extension if prompted.
+          SideStore must sign both the host app and its keyboard extension. No local Mac or Xcode is needed.
+          Enable **23×2 Kana** in Settings → General → Keyboard → Keyboards → Add New Keyboard.
+          Full Access is not required. Device installation and keyboard interaction still need testing on an iPhone.
+          EOF

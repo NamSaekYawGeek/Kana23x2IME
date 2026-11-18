@@ -82,22 +82,28 @@ jobs:
           cp artifacts/ios/Kana23x2-simulator.zip "release-files/Kana23x2-${TAG}-ios-simulator.zip"
           cp artifacts/ios/Kana23x2-device-unsigned.zip "release-files/Kana23x2-${TAG}-ios-device-unsigned.zip"
           python3 tools/verify_android_apk.py "release-files/Kana23x2-${TAG}-android-debug.apk"
+          # Historical commits predate IPA packaging; updated commits must include it.
+          if [[ -f tools/package_ios_ipa.py ]]; then
+            cp artifacts/ios/Kana23x2-unsigned.ipa "release-files/Kana23x2-${TAG}-ios-unsigned.ipa"
+            python3 tools/package_ios_ipa.py --verify "release-files/Kana23x2-${TAG}-ios-unsigned.ipa" --require-full-dictionary
+          fi
           python3 - <<'PY'
           import hashlib, json, os, plistlib, zipfile
           from pathlib import Path
           tag = os.environ['TAG']
           root = Path('release-files')
-          for archive in root.glob('*.zip'):
+          for archive in sorted(root.glob('*.zip')) + sorted(root.glob('*.ipa')):
               with zipfile.ZipFile(archive) as z:
                   if z.testzip() is not None:
                       raise SystemExit(f'Corrupt archive: {archive}')
-                  host = plistlib.loads(z.read('Kana23x2.app/Info.plist'))
-                  extension = plistlib.loads(z.read('Kana23x2.app/PlugIns/KanaKeyboard.appex/Info.plist'))
+                  prefix = 'Payload/' if archive.suffix == '.ipa' else ''
+                  host = plistlib.loads(z.read(prefix + 'Kana23x2.app/Info.plist'))
+                  extension = plistlib.loads(z.read(prefix + 'Kana23x2.app/PlugIns/KanaKeyboard.appex/Info.plist'))
                   if any(p['CFBundleShortVersionString'] != tag[1:] for p in (host, extension)):
                       raise SystemExit(f'Version mismatch: {archive}')
                   if host['CFBundleVersion'] != extension['CFBundleVersion']:
                       raise SystemExit(f'Host/extension build mismatch: {archive}')
-                  data = z.read('Kana23x2.app/PlugIns/KanaKeyboard.appex/skk_compact.tsv').decode('utf-8')
+                  data = z.read(prefix + 'Kana23x2.app/PlugIns/KanaKeyboard.appex/skk_compact.tsv').decode('utf-8')
                   rows = data.splitlines()
                   if len(rows) <= 100_000 or not any('日本' in row.split('\t')[1:] for row in rows if row.startswith('にほん\t')):
                       raise SystemExit(f'Full Japanese dictionary missing: {archive}')

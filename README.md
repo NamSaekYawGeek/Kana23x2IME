@@ -8,11 +8,14 @@
 
 前往 [v0.2.0 发布页面](https://github.com/NamSaekYawGeek/Kana23x2IME/releases/tag/v0.2.0) 下载对应平台的文件。
 
+**SideStore 用户：** v0.2.0 的历史发布文件只有 `.app` ZIP；本次更新后的 **Build iOS** 工作流会额外生成 `Kana23x2-unsigned.ipa`。请从包含这项更新的成功构建中下载，具体步骤见下文。
+
 | 产物 | 用途 |
 | --- | --- |
 | Android APK | 调试签名的安装包，适用于 Android 8.0 及以上 |
 | iOS 模拟器 ZIP | 解压后得到 `.app`，供 Mac 上的 iOS 模拟器使用 |
 | iOS 未签名真机 ZIP | 解压后得到 `.app`，需自行签名后才能安装到 iPhone / iPad |
+| iOS 未签名 IPA（更新后的 Actions 构建） | 可导入 SideStore，由 SideStore 为主 App 和键盘扩展签名后安装 |
 
 ### Android
 
@@ -24,7 +27,16 @@
 
 ### iOS
 
-支持 iOS 15 及以上。**未签名真机 `.app` 不能直接安装，也不是可直接安装的 IPA。** 真机测试需要在 Mac 的 Xcode 中打开工程，为宿主 App 和键盘扩展选择自己的签名团队。必要时修改两者的 Bundle ID，扩展 ID 应保留宿主 App ID 前缀。构建步骤见下文。
+支持 iOS 15 及以上。已有可用的 SideStore 时，**不需要本地 Mac 或 Xcode**：GitHub Actions 使用云端 macOS/Xcode 编译，SideStore 负责在你的 iPhone 上签名并安装。
+
+1. 在仓库 **Actions → Build iOS → Run workflow** 中选择包含 IPA 打包更新的分支并运行；也可以打开该分支已有的成功构建。
+2. 在构建页面底部 **Artifacts** 下载 `Kana23x2-iOS`（下载 Actions 产物需要登录 GitHub）。解压外层 ZIP，找到 **`Kana23x2-unsigned.ipa`**。
+3. 在 SideStore 的 **My Apps** 中点 **＋**，选择该 IPA。若提示是否移除 App Extensions，选择**保留 `KanaKeyboard` 键盘扩展**；移除后只能安装主 App，无法添加键盘。
+4. 等待 SideStore 完成主 App 和扩展的签名与安装，再按下面的步骤启用键盘。
+
+IPA 是未签名的安装容器，不能通过「文件」App 直接点开安装。SideStore 需要正常工作的账号、配对和签名配置；键盘扩展也需要独立的 App ID/描述文件，受账号额度限制。若提示 App ID 额度或签名失败，请保留错误信息排查，勿通过删除键盘扩展解决。按 SideStore 显示的有效期续签即可。
+
+项目不使用 App Groups、不请求完全访问，也不需要把 Apple 账号或证书放进 GitHub。自动化构建和 IPA 校验不等于真机验收，SideStore 安装与键盘交互仍需在 iPhone 上实测。
 
 安装宿主 App 后，前往 **设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 23×2 Kana**。在输入框中长按 🌐 切换键盘，无需开启“允许完全访问”。
 
@@ -107,7 +119,7 @@ Android 删除操作能够保持补充平面字符完整，但尚不保证把家
 ### GitHub Actions
 
 - **Actions → Build APK → Run workflow**：生成 `Kana23x2-debug-apk`，其中包含 `app-debug.apk`。
-- **Actions → Build iOS → Run workflow**：生成 `Kana23x2-iOS`，其中包含模拟器和未签名真机 ZIP。
+- **Actions → Build iOS → Run workflow**：生成 `Kana23x2-iOS`，其中包含 `Kana23x2-unsigned.ipa`、该 IPA 的 SHA-256 校验文件，以及原有模拟器和未签名真机 ZIP。IPA 打包时检查主 App、嵌入的键盘扩展、真机可执行文件、版本和完整离线词典。
 
 请选择包含最新修复的分支运行。旧构建记录的 **Re-run** 会沿用旧提交，不会自动切换到最新代码。
 
@@ -135,6 +147,15 @@ open ios/Kana23x2.xcodeproj
 ```
 
 在 Xcode 中选择 `Kana23x2` 构建方案及目标设备，完成签名配置后运行。生成的 Xcode 工程不提交到 Git，以 `ios/project.yml` 为配置来源。
+
+以上是可选的 Mac 本地开发方式；使用 SideStore 安装云端构建时无需执行这些步骤。云端真机编译完成后使用下列命令生成并校验标准 IPA（不能将 `.app` ZIP 简单改后缀）：
+
+```bash
+python3 tools/package_ios_ipa.py \
+  --app ios/build/device/Build/Products/Release-iphoneos/Kana23x2.app \
+  --output ios/Kana23x2-unsigned.ipa --require-full-dictionary
+python3 tools/package_ios_ipa.py --verify ios/Kana23x2-unsigned.ipa --require-full-dictionary
+```
 
 ### 词典与核心回归测试
 
