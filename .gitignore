@@ -10,5 +10,7 @@ ios/.build/
 ios/.swiftpm/
 ios/*.xcodeproj/
 ios/*.zip
+ios/*.ipa
+ios/*.ipa.sha256
 ios/Keyboard/Resources/skk_compact.tsv
 app/src/main/assets/skk_compact.tsv.gz
