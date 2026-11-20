@@ -12,3 +12,6 @@ ios/*.xcodeproj/
 ios/*.zip
 ios/Keyboard/Resources/skk_compact.tsv
 app/src/main/assets/skk_compact.tsv.gz
+windows/**/bin/
+windows/**/obj/
+windows/dist/
