@@ -1,0 +1,54 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/windows-*']
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test layout, transforms and roman encoding
+        run: dotnet run --project windows/Kana23x2.Core.Tests -c Release
+      - name: Publish self-contained Windows x64 app
+        run: >-
+          dotnet publish windows/Kana23x2.Desktop -c Release -r win-x64
+          --self-contained true -p:DebugType=None -p:DebugSymbols=false
+          -o windows/dist/Kana23x2-win-x64
+      - name: Smoke test Windows UI and native hook startup
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath windows/dist/Kana23x2-win-x64/Kana23x2.exe -ArgumentList '--smoke-test' -PassThru
+          if (!$process.WaitForExit(15000)) {
+            $process.Kill()
+            throw 'Desktop startup did not exit within 15 seconds.'
+          }
+          if ($process.ExitCode -ne 0) { throw "Desktop startup failed: $($process.ExitCode)" }
+      - name: Package application and instructions
+        shell: pwsh
+        run: |
+          $output = 'windows/dist/Kana23x2-win-x64'
+          if (!(Test-Path "$output/Kana23x2.exe")) { throw 'Windows executable missing.' }
+          Copy-Item windows/README.md "$output/README.md"
+          Compress-Archive -Path $output -DestinationPath windows/dist/Kana23x2-win-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kana23x2-Windows-x64
+          path: windows/dist/Kana23x2-win-x64.zip
+          if-no-files-found: error

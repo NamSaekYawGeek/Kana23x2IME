@@ -1,8 +1,8 @@
-# 23×2 Kana — Android / iOS 日语假名键盘
+# 23×2 Kana — Android / iOS / Windows 日语假名键盘
 
-23×2 Kana 使用两套各 23 个位置的假名板，在熟悉的 QWERTY 布局上直接输入日语假名。Android 版基于系统输入法服务，iOS 版提供系统键盘扩展；两端均可离线进行假名到汉字的转换。
+23×2 Kana 使用两套各 23 个位置的假名板，在熟悉的 QWERTY 布局上直接输入日语假名。Android 版基于系统输入法服务，iOS 版提供系统键盘扩展；两端均可离线进行假名到汉字的转换。Windows 桌面预览版提供布局按键映射，转换和候选框由微软日语输入法负责。
 
-当前版本为 **v0.2.0**。这是供安装体验和继续开发的键盘原型，转换质量仍需完善，尚未完成真机交互验收。
+Android / iOS 当前发布版本为 **v0.2.0**。这是供安装体验和继续开发的键盘原型，转换质量仍需完善，尚未完成真机交互验收。Windows 版为新增预览实现，不包含在 v0.2.0 发布文件中，Windows IME 交互仍待实机验收。
 
 ## 下载与安装
 
@@ -35,6 +35,14 @@ xcrun simctl install booted Kana23x2.app
 ```
 
 如果模拟器不显示软键盘，请关闭其硬件键盘连接。
+
+### Windows 桌面预览版
+
+Windows 版在系统托盘运行，使用同一套 23×2 布局。每次按键即时送入 **Microsoft IME**，假名直接显示在目标输入框，空格转换和选词继续使用系统候选框。X／C 后缀变形采用退格后重新输入的实验性实现，需要按应用验证；不能仅凭最近输入记录保证文字尚未确认。
+
+使用 Windows 10 / 11 x64，安装微软日语 IME 并开启假名、罗马字输入模式。自包含构建包解压后运行 `Kana23x2.exe`，无需另装 .NET；`Ctrl + Alt + K` 暂停／启用。Windows 构建产物可从 **Actions → Build Windows** 获取。
+
+完整操作、兼容限制、构建命令和实机验收项目见 [Windows 说明](windows/README.md)。
 
 ## 键位与操作
 
@@ -108,6 +116,7 @@ Android 删除操作能够保持补充平面字符完整，但尚不保证把家
 
 - **Actions → Build APK → Run workflow**：生成 `Kana23x2-debug-apk`，其中包含 `app-debug.apk`。
 - **Actions → Build iOS → Run workflow**：生成 `Kana23x2-iOS`，其中包含模拟器和未签名真机 ZIP。
+- **Actions → Build Windows → Run workflow**：测试桌面核心逻辑，生成 `Kana23x2-Windows-x64`，其中包含自包含 Windows ZIP。该流程不验证微软 IME 实际交互，也不自动发布 Release。
 
 请选择包含最新修复的分支运行。旧构建记录的 **Re-run** 会沿用旧提交，不会自动切换到最新代码。
 
