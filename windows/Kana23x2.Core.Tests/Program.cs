@@ -1,7 +1,10 @@
+using Kana23x2.Desktop;
 using Kana23x2.Core;
 
 var tests = new (string Name, Action Run)[]
 {
+    ("Full-width kana input stays ready across ROMAN flag changes", KanaModeReadiness),
+    ("Unavailable IME states still pass keys to the editor", InvalidImeStates),
     ("All 46 mobile layout positions and both scripts", Layout),
     ("Unknown keys and boards do not map", InvalidKeys),
     ("Board and script change only subsequent input", BufferModes),
@@ -256,4 +259,31 @@ static void DirectUnsupported()
     session.Remember("ク");
     False(session.TryTransform('C', out replacement, out unsupported));
     Equal("", replacement); Equal("ㇰ", unsupported); Equal("ク", session.Tail);
+}
+
+
+static void KanaModeReadiness()
+{
+    var target = new WindowContext(1, 2, 0x0411, 3);
+    // Simulate polling the same full-width editor before and after switching boards.
+    // A change in 0x10 alone must neither disable mapping nor look like a focus/mode change.
+    foreach (uint fullWidthKana in new uint[] { 0x09, 0x0B })
+    {
+        var advertised = target.WithImeStatus(true, fullWidthKana | 0x10);
+        var unadvertised = target.WithImeStatus(true, fullWidthKana);
+        True(advertised.IsInputReady);
+        True(unadvertised.IsInputReady);
+        Equal(advertised, unadvertised);
+        Equal(fullWidthKana == 0x0B, unadvertised.KatakanaMode);
+    }
+}
+
+static void InvalidImeStates()
+{
+    var japanese = new WindowContext(1, 2, 0x0411, 3);
+    False(japanese.IsInputReady);
+    False(japanese.WithImeStatus(false, 0x09).IsInputReady);
+    False(japanese.WithImeStatus(true, 0x08).IsInputReady); // Full-width alphanumeric.
+    False(japanese.WithImeStatus(true, 0x03).IsInputReady); // Half-width katakana.
+    False(new WindowContext(1, 2, 0x0409, 3).WithImeStatus(true, 0x09).IsInputReady);
 }

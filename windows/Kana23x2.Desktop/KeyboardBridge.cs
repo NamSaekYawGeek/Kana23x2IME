@@ -10,15 +10,6 @@ public readonly record struct KeyboardEvent(
     public bool IsUp => !IsDown;
 }
 
-public sealed record WindowContext(
-    nint Window, nint Focus, nint Layout, uint ThreadId,
-    bool IsJapanese, bool ImeOpen, bool NativeMode, bool RomanMode, bool IsKnown,
-    bool KatakanaMode, bool FullWidthMode)
-{
-    public bool IsInputReady => IsKnown && IsJapanese && ImeOpen && NativeMode && RomanMode && FullWidthMode;
-    public static WindowContext Unknown { get; } = new(0, 0, 0, 0, false, false, false, false, false, false, false);
-}
-
 /// <summary>
 /// UI-thread keyboard bridge. This object needs a running Windows message loop.
 /// It sends ordinary key events to the IME and never reads another process's HIMC.
@@ -70,15 +61,7 @@ public sealed class KeyboardBridge : IDisposable
             || !QueryIme(ime, NativeMethods.ImcGetConversionMode, out var conversion))
             return target;
 
-        return target with
-        {
-            IsKnown = true,
-            ImeOpen = open != 0,
-            NativeMode = (conversion & NativeMethods.ImeCmodeNative) != 0,
-            RomanMode = (conversion & NativeMethods.ImeCmodeRoman) != 0,
-            KatakanaMode = (conversion & NativeMethods.ImeCmodeKatakana) != 0,
-            FullWidthMode = (conversion & NativeMethods.ImeCmodeFullshape) != 0
-        };
+        return target.WithImeStatus(open != 0, conversion);
     }
 
     /// <summary>Fast recheck that does not send a message to the target application.</summary>
@@ -235,8 +218,7 @@ public sealed class KeyboardBridge : IDisposable
         var layout = NativeMethods.GetKeyboardLayout(threadId);
         var info = new NativeMethods.GuiThreadInfo { Size = (uint)Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
         var focus = NativeMethods.GetGUIThreadInfo(threadId, ref info) ? info.Focus : 0;
-        return new WindowContext(window, focus, layout, threadId,
-            ((long)layout & 0xFFFF) == 0x0411, false, false, false, false, false, false);
+        return new WindowContext(window, focus, layout, threadId);
     }
 
     private static bool QueryIme(nint ime, uint command, out nuint result) =>

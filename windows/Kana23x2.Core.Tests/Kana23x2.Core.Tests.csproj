@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Kana23x2.Desktop/WindowContext.cs" Link="WindowContext.cs" />
     <ProjectReference Include="../Kana23x2.Core/Kana23x2.Core.csproj" />
   </ItemGroup>
 </Project>

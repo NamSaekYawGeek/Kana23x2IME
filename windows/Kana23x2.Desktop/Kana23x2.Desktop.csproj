@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Kana23x2</AssemblyName>
     <RootNamespace>Kana23x2.Desktop</RootNamespace>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

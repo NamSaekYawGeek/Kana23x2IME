@@ -73,11 +73,7 @@ internal sealed class TrayApplication : ApplicationContext
     private void RefreshContext()
     {
         var next = bridge.ReadForegroundContext();
-        if (context is not null &&
-            (context.Window != next.Window || context.Focus != next.Focus || context.Layout != next.Layout ||
-             context.ImeOpen != next.ImeOpen || context.NativeMode != next.NativeMode ||
-             context.RomanMode != next.RomanMode || context.IsKnown != next.IsKnown ||
-             context.KatakanaMode != next.KatakanaMode || context.FullWidthMode != next.FullWidthMode))
+        if (context is not null && context != next)
         {
             ClearTail();
             shiftTap = 0;
@@ -87,7 +83,6 @@ internal sealed class TrayApplication : ApplicationContext
             !next.IsJapanese ? "等待切换到日语 Microsoft IME" :
             !next.IsKnown ? "无法确认当前 IME 状态，暂不映射按键" :
             !next.ImeOpen || !next.NativeMode ? "请切换到日语假名「あ」输入模式" :
-            !next.RomanMode ? "请将微软日语 IME 设置为罗马字输入" :
             !next.FullWidthMode ? "请使用全角平假名或全角片假名模式" :
             $"即时映射已启用 · 第 {session.Board + 1} 板 · {(session.Katakana ? "片假名" : "平假名")}";
         guide.SetStatus(status);
@@ -165,8 +160,11 @@ internal sealed class TrayApplication : ApplicationContext
         switch (vk)
         {
             case 0x5A:
-                if (!key.IsRepeat) session.ToggleBoard();
-                ShowMode();
+                if (!key.IsRepeat)
+                {
+                    session.ToggleBoard();
+                    ShowMode();
+                }
                 return true;
             case 0x58:
             case 0x43:

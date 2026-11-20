@@ -13,10 +13,6 @@ internal static class NativeMethods
     internal const uint WmImeControl = 0x0283;
     internal const uint ImcGetConversionMode = 0x0001;
     internal const uint ImcGetOpenStatus = 0x0005;
-    internal const uint ImeCmodeNative = 0x0001;
-    internal const uint ImeCmodeKatakana = 0x0002;
-    internal const uint ImeCmodeFullshape = 0x0008;
-    internal const uint ImeCmodeRoman = 0x0010;
     internal const uint LlkhfExtended = 0x01;
     internal const uint LlkhfInjected = 0x10;
     internal const uint LlmhfInjected = 0x01;
