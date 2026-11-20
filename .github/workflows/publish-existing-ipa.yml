@@ -1,0 +1,96 @@
+name: Publish verified v0.2.0 IPA
+
+on:
+  push:
+    branches: [codex/release-ipa-v0.2.0]
+    paths:
+      - .github/workflows/publish-existing-ipa.yml
+      - docs/releases/v0.2.0-ipa.md
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-existing-ipa-v0.2.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'NamSaekYawGeek/Kana23x2IME' && github.ref == 'refs/heads/codex/release-ipa-v0.2.0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source build and download existing IPA
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          def get(path):
+              return json.loads(subprocess.check_output(['gh', 'api', 'repos/' + os.environ['GH_REPO'] + '/' + path]))
+          run = get('actions/runs/44345033276')
+          assert (run['status'], run['conclusion'], run['head_sha'], run['path']) == ('completed', 'success', '33f9d469ac2357bea3bdf85e7f1c49b40c4f0a2b', '.github/workflows/ios.yml')
+          assert run['head_repository']['full_name'] == os.environ['GH_REPO']
+          artifact = get('actions/artifacts/14446556234')
+          assert not artifact['expired'] and artifact['name'] == 'Kana23x2-iOS'
+          assert artifact['workflow_run']['id'] == 44345033276
+          assert artifact['digest'] == 'sha256:ac2344271b3dbc7749ead522049f72f116e0d90ab5a1a2311893359aaa204b27'
+          subprocess.run(['gh', 'run', 'download', '44345033276', '--name', 'Kana23x2-iOS', '--dir', 'artifact'], check=True)
+          PY
+      - name: Verify IPA contents
+        run: python3 tools/package_ios_ipa.py --verify artifact/Kana23x2-unsigned.ipa --require-full-dictionary
+      - name: Upload IPA and checksum, then update release notes
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, shutil, subprocess
+          from pathlib import Path
+          repo = os.environ['GH_REPO']
+          tag = 'v0.2.0'
+          release_path = 'releases/444830588'
+          expected = 'd477f3e4606595ebc8c5f592e98409ba5f3b4b17081bc8133ad263fe788e5f11'
+          def get(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{path}']))
+          def check_release(release):
+              assert release['tag_name'] == tag and not release['draft']
+              assert release['target_commitish'] == '1be9c23857f4506650c27b463b1a2f16edda9b65'
+          source = Path('artifact/Kana23x2-unsigned.ipa')
+          assert hashlib.sha256(source.read_bytes()).hexdigest() == expected
+          destination = Path('release-files')
+          destination.mkdir(exist_ok=True)
+          ipa = destination / 'Kana23x2-v0.2.0-ios-unsigned.ipa'
+          shutil.copyfile(source, ipa)
+          checksum = ipa.with_suffix('.ipa.sha256')
+          checksum.write_text(f'{expected}  {ipa.name}\n')
+          release = get(release_path)
+          check_release(release)
+          original_assets = {a['name']: (a['id'], a['size'], a.get('digest')) for a in release['assets']}
+          for file in (ipa, checksum):
+              digest = 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest()
+              existing = next((a for a in release['assets'] if a['name'] == file.name), None)
+              if existing:
+                  assert existing['size'] == file.stat().st_size and existing.get('digest') == digest, 'Existing asset differs; refusing to overwrite'
+              else:
+                  subprocess.run(['gh', 'release', 'upload', tag, str(file)], check=True)
+          uploaded = get(release_path)
+          check_release(uploaded)
+          assert uploaded['body'] == release['body'], 'Release notes changed during upload'
+          assets = {a['name']: a for a in uploaded['assets']}
+          for name, original in original_assets.items():
+              assert (assets[name]['id'], assets[name]['size'], assets[name].get('digest')) == original
+          for file in (ipa, checksum):
+              asset = assets[file.name]
+              assert asset['state'] == 'uploaded' and asset['size'] == file.stat().st_size
+              assert asset['digest'] == 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest()
+          body = Path('docs/releases/v0.2.0-ipa.md').read_text()
+          Path('release-update.json').write_text(json.dumps({'body': body}))
+          subprocess.run(['gh', 'api', '--method', 'PATCH', f'repos/{repo}/{release_path}', '--input', 'release-update.json', '--silent'], check=True)
+          final = get(release_path)
+          check_release(final)
+          assert final['body'] == body
+          print(final['html_url'])
+          print(assets[ipa.name]['browser_download_url'])
+          PY
