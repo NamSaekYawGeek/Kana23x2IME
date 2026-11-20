@@ -6,7 +6,6 @@ internal sealed class TrayApplication : ApplicationContext
 {
     private readonly KeyboardBridge bridge;
     private readonly GuideForm guide;
-    private readonly StatusOverlay overlay = new();
     private readonly NotifyIcon tray;
     private readonly ToolStripMenuItem toggleItem;
     private readonly ToolStripMenuItem transformItem;
@@ -16,6 +15,7 @@ internal sealed class TrayApplication : ApplicationContext
     private bool enabled = true;
     private int shiftTap;
     private DateTime feedbackUntil;
+    private string? feedbackMessage;
     private DateTime tailUntil;
     private bool refreshQueued;
 
@@ -51,7 +51,7 @@ internal sealed class TrayApplication : ApplicationContext
 
     private void InvalidateContext()
     {
-        ClearTail();
+        ClearInputState();
         shiftTap = 0;
         context = null;
         QueueContextRefresh();
@@ -75,7 +75,7 @@ internal sealed class TrayApplication : ApplicationContext
         var next = bridge.ReadForegroundContext();
         if (context is not null && context != next)
         {
-            ClearTail();
+            ClearInputState();
             shiftTap = 0;
         }
         context = next;
@@ -84,17 +84,17 @@ internal sealed class TrayApplication : ApplicationContext
             !next.IsKnown ? "无法确认当前 IME 状态，暂不映射按键" :
             !next.ImeOpen || !next.NativeMode ? "请切换到日语假名「あ」输入模式" :
             !next.FullWidthMode ? "请使用全角平假名或全角片假名模式" :
-            $"即时映射已启用 · 第 {session.Board + 1} 板 · {(session.Katakana ? "片假名" : "平假名")}";
-        guide.SetStatus(status);
-        tray.Text = "Kana23x2 · " + (enabled ? "已启用" : "已暂停");
+            $"即时映射已启用 · 第 {session.Board + 1} 板 · {(session.KatakanaFor(next.KatakanaMode) ? "片假名" : "平假名")}";
+        if (DateTime.UtcNow >= feedbackUntil) feedbackMessage = null;
+        guide.SetStatus(feedbackMessage ?? status);
+        tray.Text = feedbackMessage is null ? $"Kana23x2 · {status}" : "Kana23x2 · 请查看布局与试输窗口中的提示";
         if (DateTime.UtcNow >= tailUntil) session.ClearTail();
-        if (DateTime.UtcNow >= feedbackUntil) overlay.Hide();
     }
 
     private void ToggleEnabled()
     {
         enabled = !enabled;
-        ClearTail();
+        ClearInputState();
         shiftTap = 0;
         toggleItem.Text = enabled ? "暂停映射" : "启用映射";
         // Also runs in the low-level hook: polling stays on the timer.
@@ -104,7 +104,7 @@ internal sealed class TrayApplication : ApplicationContext
     private void PauseOnError(Exception error)
     {
         enabled = false;
-        ClearTail();
+        ClearInputState();
         toggleItem.Text = "启用映射";
         Feedback("映射已暂停", error.Message);
     }
@@ -125,7 +125,7 @@ internal sealed class TrayApplication : ApplicationContext
         }
         if (!Ready || context is null || !bridge.CurrentTargetMatches(context))
         {
-            ClearTail();
+            ClearInputState();
             shiftTap = 0;
             QueueContextRefresh();
             return false;
@@ -141,8 +141,7 @@ internal sealed class TrayApplication : ApplicationContext
             {
                 if (shiftTap == vk && !key.Ctrl && !key.Alt && !key.Win)
                 {
-                    session.ToggleScript();
-                    ShowMode();
+                    session.ToggleScript(context.KatakanaMode);
                 }
                 shiftTap = 0;
             }
@@ -152,19 +151,14 @@ internal sealed class TrayApplication : ApplicationContext
         shiftTap = 0;
         if (key.Ctrl || key.Alt || key.Win || key.Shift)
         {
-            ClearTail();
-            context = null; // Native mode shortcuts can retain the same HWND/HKL.
-            QueueContextRefresh();
+            InvalidateContext(); // Native mode shortcuts can retain the same HWND/HKL.
             return false;
         }
         switch (vk)
         {
             case 0x5A:
-                if (!key.IsRepeat)
-                {
-                    session.ToggleBoard();
-                    ShowMode();
-                }
+                // Both physical Z edges belong to the mapper. Keep the focused IME untouched.
+                if (!key.IsRepeat) session.ToggleBoard();
                 return true;
             case 0x58:
             case 0x43:
@@ -172,15 +166,14 @@ internal sealed class TrayApplication : ApplicationContext
                 return true;
             case 0xBD:
             case 0x6D:
-                // A standalone long vowel follows the selected script, not a neutral default.
                 return SendKana("ー", false);
         }
-        if (vk is >= 0x41 and <= 0x5A && session.TryGetKana((char)vk, out string kana))
+        if (vk is >= 0x41 and <= 0x5A && session.TryGetKana((char)vk, context.KatakanaMode, out string kana))
             return SendKana(kana, false);
 
         // Space/Enter/Esc/Backspace/arrows/digits/punctuation all belong to the IME.
-        // Once any is used, X/C must not attempt to replace the previously sent kana.
-        ClearTail();
+        // Leave subsequent composition in the hands of the focused input method.
+        ClearInputState();
         if (vk is 0x14 or 0x15 or 0x19 or 0x1C or 0x1D) InvalidateContext();
         return false;
     }
@@ -212,14 +205,14 @@ internal sealed class TrayApplication : ApplicationContext
             Feedback("未发送", $"无法编码：{unsupported}");
             return true;
         }
-        if (kana == "ー") runs = new[] { new RomanRun(session.Katakana, "-") };
+        var requestedScript = session.RequestedKatakana;
         string? error;
         bool sent = replace
             ? bridge.TryReplaceLastKana(context, runs, out error)
-            : bridge.TrySendReading(context, runs, 0, out error);
+            : bridge.TrySendReading(context, runs, requestedScript, out error);
         if (!sent)
         {
-            ClearTail();
+            ClearInputState();
             if (bridge.LastSendWasPartial)
             {
                 enabled = false;
@@ -233,17 +226,22 @@ internal sealed class TrayApplication : ApplicationContext
         // heuristic, NOT proof of an uncommitted composition in another process.
         session.Remember(kana);
         tailUntil = DateTime.UtcNow.AddSeconds(3);
-        if (runs.Count > 0) context = context with { KatakanaMode = runs[^1].Katakana };
+        if (!replace && requestedScript.HasValue)
+            context = context with { KatakanaMode = requestedScript.Value };
         return true;
     }
 
-    private void ShowMode() => Feedback(
-        $"Kana23x2 · 第 {session.Board + 1} 板", session.Katakana ? "片假名" : "平假名");
-
     private void Feedback(string title, string message)
     {
+        // The guide and tray display the message on their next refresh without creating a window.
+        feedbackMessage = $"{title} · {message}";
         feedbackUntil = DateTime.UtcNow.AddSeconds(4);
-        if (context is not null) overlay.Display(context.Window, title, message);
+    }
+
+    private void ClearInputState()
+    {
+        ClearTail();
+        session.ClearScriptRequest();
     }
 
     private void ClearTail()
@@ -257,7 +255,6 @@ internal sealed class TrayApplication : ApplicationContext
         poll.Stop();
         bridge.Dispose();
         tray.Visible = false;
-        overlay.Close();
         guide.Exit();
         base.ExitThreadCore();
     }
@@ -269,7 +266,6 @@ internal sealed class TrayApplication : ApplicationContext
             poll.Dispose();
             bridge.Dispose();
             tray.Dispose();
-            overlay.Dispose();
             guide.Dispose();
         }
         base.Dispose(disposing);

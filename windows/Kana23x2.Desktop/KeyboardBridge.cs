@@ -74,13 +74,14 @@ public sealed class KeyboardBridge : IDisposable
     }
 
     /// <summary>
-    /// Atomically queues romaji and an optional terminal key (0 means no terminal).
+    /// Atomically queues romaji and an optional, explicit one-shot script request.
+    /// Ordinary input follows the native IME mode; RomanRun.Katakana is not a command.
     /// A successful result means queued, not that an application has processed it.
     /// A partial result must never be retried automatically.
     /// </summary>
     public bool TrySendReading(WindowContext expected, IReadOnlyList<RomanRun> runs,
-        int terminalVirtualKey, out string? error) =>
-        TryInject(expected, runs, terminalVirtualKey, replaceLastKana: false, out error);
+        bool? requestedKatakana, out string? error) =>
+        TryInject(expected, runs, requestedKatakana, replaceLastKana: false, out error);
 
     /// <summary>
     /// Sends one native Backspace followed by replacement romaji in a single batch.
@@ -90,10 +91,10 @@ public sealed class KeyboardBridge : IDisposable
     /// </summary>
     public bool TryReplaceLastKana(WindowContext expected, IReadOnlyList<RomanRun> replacement,
         out string? error) =>
-        TryInject(expected, replacement, 0, replaceLastKana: true, out error);
+        TryInject(expected, replacement, null, replaceLastKana: true, out error);
 
     private bool TryInject(WindowContext expected, IReadOnlyList<RomanRun> runs,
-        int terminalVirtualKey, bool replaceLastKana, out string? error)
+        bool? requestedKatakana, bool replaceLastKana, out string? error)
     {
         LastSendWasPartial = false;
         error = null;
@@ -107,49 +108,10 @@ public sealed class KeyboardBridge : IDisposable
             error = "请先松开 Shift、Ctrl、Alt 和 Windows 键；未发送文字。";
             return false;
         }
-        if (terminalVirtualKey is not (0 or 0x20 or 0x0D or 0x09))
-        {
-            error = "不支持的确认按键；未发送文字。";
+        if (!TryBuildInputPlan(runs, expected.KatakanaMode, requestedKatakana, replaceLastKana,
+                character => NativeMethods.VkKeyScanExW(character, expected.Layout), out var batch, out error))
             return false;
-        }
-
-        var inputs = new List<NativeMethods.Input>();
-        if (replaceLastKana)
-        {
-            if (!runs.Any(run => !string.IsNullOrEmpty(run.Keys)))
-            {
-                error = "替换读音为空；未修改文字。";
-                return false;
-            }
-            // Build and validate the entire replacement before sending anything.
-            // A failed encoding must never leave a Backspace without a replacement.
-            AddKey(inputs, 0x08);
-        }
-        var katakana = expected.KatakanaMode;
-        foreach (var run in runs)
-        {
-            if (string.IsNullOrEmpty(run.Keys))
-                continue;
-            if (run.Katakana != katakana)
-            {
-                // Microsoft IME: Ctrl+CapsLock -> Hiragana; Alt+CapsLock -> Katakana.
-                // F6/F7 would convert the whole composition, which is not intended here.
-                AddModeChord(inputs, run.Katakana);
-                katakana = run.Katakana;
-            }
-            foreach (var character in run.Keys)
-            {
-                if (!(character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '\'' or '.' or ',')
-                    || !TryAddCharacter(inputs, character, expected.Layout))
-                {
-                    error = "当前键盘布局无法发送所需罗马字；未发送文字。";
-                    return false;
-                }
-            }
-        }
-        if (terminalVirtualKey != 0)
-            AddKey(inputs, (ushort)terminalVirtualKey);
-        if (inputs.Count == 0)
+        if (batch.Length == 0)
             return true;
 
         // Recheck immediately before SendInput: preparing a long reading may take time.
@@ -159,7 +121,6 @@ public sealed class KeyboardBridge : IDisposable
             return false;
         }
 
-        var batch = inputs.ToArray();
         var sent = NativeMethods.SendInput((uint)batch.Length, batch, Marshal.SizeOf<NativeMethods.Input>());
         if (sent == batch.Length)
             return true;
@@ -172,6 +133,55 @@ public sealed class KeyboardBridge : IDisposable
         if (!released)
             error += "部分按键释放也未送达，请松开并重新按一次相关按键。";
         return false;
+    }
+
+    /// <summary>
+    /// Builds the actual production event batch without querying or mutating Windows.
+    /// Tests supply a character resolver; production supplies VkKeyScanExW for the
+    /// target layout. A failed plan always returns an empty batch.
+    /// </summary>
+    internal static bool TryBuildInputPlan(IReadOnlyList<RomanRun> runs, bool currentKatakana,
+        bool? requestedKatakana, bool replaceLastKana, Func<char, short> resolveKey,
+        out NativeMethods.Input[] batch, out string? error)
+    {
+        batch = [];
+        error = null;
+        if (!runs.Any(run => !string.IsNullOrEmpty(run.Keys)))
+        {
+            if (!replaceLastKana) return true;
+            error = "替换读音为空；未修改文字。";
+            return false;
+        }
+
+        var inputs = new List<NativeMethods.Input>();
+        if (replaceLastKana)
+        {
+            // X/C never switches modes, even if a supplied run describes another
+            // script. Validate the complete plan before delivering the Backspace.
+            AddKey(inputs, 0x08);
+        }
+        else if (requestedKatakana is { } requested && requested != currentKatakana)
+        {
+            AddScriptRequest(inputs, requested);
+        }
+
+        foreach (var run in runs)
+        {
+            if (string.IsNullOrEmpty(run.Keys)) continue;
+            // The single explicit request above is the only script operation.
+            // Neither this run nor a subsequent run can implicitly change modes.
+            foreach (var character in run.Keys)
+            {
+                if (!(character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '\'' or '.' or ',')
+                    || !TryAddCharacter(inputs, resolveKey(character)))
+                {
+                    error = "当前键盘布局无法发送所需罗马字；未发送文字。";
+                    return false;
+                }
+            }
+        }
+        batch = inputs.ToArray();
+        return true;
     }
 
     private bool ReleasePartialDowns(NativeMethods.Input[] batch, uint sent)
@@ -229,17 +239,18 @@ public sealed class KeyboardBridge : IDisposable
         new[] { 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C }
             .Any(key => _down.Contains(key) || NativeMethods.GetAsyncKeyState(key) < 0);
 
-    private static void AddModeChord(List<NativeMethods.Input> inputs, bool katakana)
+    private static void AddScriptRequest(List<NativeMethods.Input> inputs, bool katakana)
     {
-        ushort modifier = katakana ? (ushort)0xA4 : (ushort)0xA2;
-        inputs.Add(NativeMethods.Input.Key(modifier));
-        AddKey(inputs, 0x14);
-        inputs.Add(NativeMethods.Input.Key(modifier, true));
+        // Dedicated IME On has explicit Japanese IME semantics across composition
+        // states: IME On -> Hiragana; Shift+IME On -> full-width Katakana.
+        // Avoid Caps Lock/Eisu and release synthetic Shift before any roman letters.
+        if (katakana) inputs.Add(NativeMethods.Input.Key(NativeMethods.VkLShift));
+        AddKey(inputs, NativeMethods.VkImeOn);
+        if (katakana) inputs.Add(NativeMethods.Input.Key(NativeMethods.VkLShift, true));
     }
 
-    private static bool TryAddCharacter(List<NativeMethods.Input> inputs, char character, nint layout)
+    private static bool TryAddCharacter(List<NativeMethods.Input> inputs, short mapping)
     {
-        var mapping = NativeMethods.VkKeyScanExW(character, layout);
         if (mapping == -1)
             return false;
         var modifiers = (mapping >> 8) & 0xFF;

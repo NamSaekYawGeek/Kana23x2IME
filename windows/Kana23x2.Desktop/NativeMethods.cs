@@ -17,6 +17,8 @@ internal static class NativeMethods
     internal const uint LlkhfInjected = 0x10;
     internal const uint LlmhfInjected = 0x01;
     internal const uint KeyeventfKeyup = 0x0002;
+    internal const ushort VkImeOn = 0x16;
+    internal const ushort VkLShift = 0xA0;
     internal static readonly nuint InjectedInputTag = 0x4B323358;
 
     internal delegate nint HookProc(int code, nint wParam, nint lParam);

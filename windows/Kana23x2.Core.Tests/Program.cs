@@ -24,6 +24,14 @@ var tests = new (string Name, Action Run)[]
     ("Direct transforms require a remembered tail and successful delivery", DirectTransforms),
     ("Direct boundaries prevent edits of previous text", DirectBoundaries),
     ("Direct board and script transitions have distinct tail rules", DirectModes),
+    ("Direct ordinary input and Z follow the native script without requesting changes", DirectNativeMode),
+    ("Direct Shift requests are explicit and consumed only after successful delivery", DirectScriptRequest),
+    ("Direct Shift requests cancel on second tap or explicit invalidation", DirectScriptCancellation),
+    ("Ordinary input sends only roman keys in both native scripts", KeyboardPlanTests.OrdinaryPlansNeverSwitchScript),
+    ("Q/Z/Q/Z/Q queues only the expected reading", KeyboardPlanTests.BoardRoundTripFollowsNativeScript),
+    ("Only a requested script change precedes kana", KeyboardPlanTests.ExplicitScriptRequestPrecedesKana),
+    ("Postfix replacement preserves the native script", KeyboardPlanTests.ReplacementNeverSwitchesScript),
+    ("Failed keyboard plans cannot delete text or deliver partial input", KeyboardPlanTests.InvalidPlanNeverReturnsDeletionOrPartialInput),
     ("Direct unsupported transforms leave the remembered tail unchanged", DirectUnsupported)
 };
 var failures = 0;
@@ -196,13 +204,13 @@ static void Empty()
 static void DirectPlanning()
 {
     var session = new DirectInputSession();
-    True(session.TryGetKana('Y', out var kana)); Equal("か", kana);
+    True(session.TryGetKana('Y', false, out var kana)); Equal("か", kana);
     Equal("", session.Tail); // A failed send must not authorize a later edit.
     False(session.TryTransform('X', out var replacement, out var unsupported));
     Equal("", replacement); Equal("", unsupported);
-    False(session.TryGetKana('Z', out _)); Equal("", session.Tail);
+    False(session.TryGetKana('Z', false, out _)); Equal("", session.Tail);
     session.Remember(kana); Equal("か", session.Tail);
-    True(session.TryGetKana('Q', out _)); Equal("か", session.Tail);
+    True(session.TryGetKana('Q', false, out _)); Equal("か", session.Tail);
 }
 static void DirectTransforms()
 {
@@ -241,11 +249,83 @@ static void DirectModes()
     session.Remember("は"); session.ToggleBoard();
     Equal(1, session.Board); Equal("は", session.Tail);
     True(session.TryTransform('C', out var replacement, out _)); Equal("ぱ", replacement);
-    True(session.TryGetKana('Y', out var mapped)); Equal("は", mapped);
-    session.ToggleScript(); True(session.Katakana); Equal("", session.Tail);
-    True(session.TryGetKana('Y', out mapped)); Equal("ハ", mapped);
+    True(session.TryGetKana('Y', false, out var mapped)); Equal("は", mapped);
+    session.ToggleScript(false); True(session.KatakanaFor(false)); Equal("", session.Tail);
+    True(session.TryGetKana('Y', false, out mapped)); Equal("ハ", mapped);
     False(session.TryTransform('C', out _, out _));
-    session.ClearTail(); Equal(1, session.Board); True(session.Katakana);
+    session.ClearTail(); Equal(1, session.Board); Equal<bool?>(true, session.RequestedKatakana);
+}
+static void DirectNativeMode()
+{
+    foreach (var nativeKatakana in new[] { false, true })
+    {
+        var session = new DirectInputSession();
+        Equal<bool?>(null, session.RequestedKatakana);
+        Equal(nativeKatakana, session.KatakanaFor(nativeKatakana));
+        session.Remember(nativeKatakana ? "カ" : "か");
+        var previousTail = session.Tail;
+
+        // Z, Q, Z, Q must change the board, never manufacture a mode change.
+        session.ToggleBoard(); Equal(1, session.Board); Equal(previousTail, session.Tail);
+        True(session.TryGetKana('Q', nativeKatakana, out var secondBoard));
+        Equal(nativeKatakana ? "ナ" : "な", secondBoard);
+        Equal<bool?>(null, session.RequestedKatakana);
+        session.Remember(secondBoard);
+        session.ToggleBoard(); Equal(0, session.Board); Equal(secondBoard, session.Tail);
+        True(session.TryGetKana('Q', nativeKatakana, out var firstBoard));
+        Equal(nativeKatakana ? "ア" : "あ", firstBoard);
+        Equal<bool?>(null, session.RequestedKatakana);
+
+        // With no explicit request, each new native observation is authoritative.
+        True(session.TryGetKana('Q', !nativeKatakana, out var changedNative));
+        Equal(nativeKatakana ? "あ" : "ア", changedNative);
+        Equal<bool?>(null, session.RequestedKatakana);
+    }
+}
+static void DirectScriptRequest()
+{
+    foreach (var nativeKatakana in new[] { false, true })
+    {
+        var session = new DirectInputSession();
+        session.Remember(nativeKatakana ? "カ" : "か");
+        session.ToggleScript(nativeKatakana);
+        Equal<bool?>(!nativeKatakana, session.RequestedKatakana);
+        Equal("", session.Tail);
+        True(session.TryGetKana('Q', nativeKatakana, out var kana));
+        Equal(nativeKatakana ? "あ" : "ア", kana);
+        Equal<bool?>(!nativeKatakana, session.RequestedKatakana);
+        False(session.TryGetKana('Z', nativeKatakana, out _));
+        Equal<bool?>(!nativeKatakana, session.RequestedKatakana);
+        session.ToggleBoard(); Equal(1, session.Board);
+        Equal<bool?>(!nativeKatakana, session.RequestedKatakana);
+
+        // Planning or failed delivery does not consume the pending Shift intent.
+        True(session.TryGetKana('Q', nativeKatakana, out kana));
+        Equal(nativeKatakana ? "な" : "ナ", kana);
+        session.Remember(kana);
+        Equal(kana, session.Tail); Equal<bool?>(null, session.RequestedKatakana);
+        Equal(!nativeKatakana, session.KatakanaFor(!nativeKatakana));
+        Equal(nativeKatakana, session.KatakanaFor(nativeKatakana));
+    }
+}
+static void DirectScriptCancellation()
+{
+    foreach (var nativeKatakana in new[] { false, true })
+    {
+        var session = new DirectInputSession();
+        session.ToggleBoard();
+        session.ToggleScript(nativeKatakana);
+        session.ToggleScript(nativeKatakana);
+        Equal<bool?>(null, session.RequestedKatakana);
+        Equal(nativeKatakana, session.KatakanaFor(nativeKatakana));
+        session.ToggleScript(nativeKatakana);
+        session.ClearScriptRequest(); // Caller observed a focus/control boundary.
+        Equal<bool?>(null, session.RequestedKatakana); Equal(1, session.Board);
+        True(session.TryGetKana('Q', nativeKatakana, out var kana));
+        Equal(nativeKatakana ? "ナ" : "な", kana);
+        session.Remember(kana);
+        session.ClearScriptRequest(); Equal(kana, session.Tail); Equal(1, session.Board);
+    }
 }
 static void DirectUnsupported()
 {

@@ -11,12 +11,15 @@ namespace Kana23x2.Core;
 public sealed class DirectInputSession
 {
     public int Board { get; private set; }
-    public bool Katakana { get; private set; }
+    /// <summary>An explicit one-shot Shift request; ordinary input follows the native IME.</summary>
+    public bool? RequestedKatakana { get; private set; }
     public string Tail { get; private set; } = "";
 
+    public bool KatakanaFor(bool nativeKatakana) => RequestedKatakana ?? nativeKatakana;
+
     /// <summary>Plans a mapped key without assuming that it was delivered.</summary>
-    public bool TryGetKana(char key, out string kana) =>
-        KanaLayout.TryGetKana(key, Board, Katakana, out kana);
+    public bool TryGetKana(char key, bool nativeKatakana, out string kana) =>
+        KanaLayout.TryGetKana(key, Board, KatakanaFor(nativeKatakana), out kana);
 
     /// <summary>Called only after successful injection, never merely after planning.</summary>
     public void Remember(string tail)
@@ -25,6 +28,7 @@ public sealed class DirectInputSession
         if (StringInfo.ParseCombiningCharacters(tail).Length > 1)
             throw new ArgumentException("Only a single trailing grapheme may be remembered.", nameof(tail));
         Tail = tail;
+        ClearScriptRequest();
     }
 
     public void ClearTail() => Tail = "";
@@ -32,12 +36,17 @@ public sealed class DirectInputSession
     // Z can select which C operation applies to the preceding kana.
     public void ToggleBoard() => Board ^= 1;
 
-    // A script change may change native IME state; do not edit across this boundary.
-    public void ToggleScript()
+    // Shift requests a change relative to the actual IME, not a persistent local
+    // mode. A second tap returning to the native mode cancels the request.
+    public void ToggleScript(bool nativeKatakana)
     {
-        Katakana = !Katakana;
+        var requested = !KatakanaFor(nativeKatakana);
+        RequestedKatakana = requested == nativeKatakana ? null : requested;
         ClearTail();
     }
+
+    /// <summary>Forget an unsent mode request on focus/control invalidation.</summary>
+    public void ClearScriptRequest() => RequestedKatakana = null;
 
     /// <summary>
     /// Plans X/C against the remembered kana. Neither success nor failure changes
