@@ -1,0 +1,367 @@
+using Kana23x2.Core;
+
+namespace Kana23x2.Desktop;
+
+internal sealed class TrayApplication : ApplicationContext
+{
+    private readonly IKeyboardBridge bridge;
+    private readonly GuideForm guide;
+    private readonly NotifyIcon tray;
+    private readonly ToolStripMenuItem toggleItem;
+    private readonly ToolStripMenuItem transformItem;
+    private readonly System.Windows.Forms.Timer poll = new() { Interval = 50 };
+    private readonly DirectInputSession session = new();
+    private WindowContext? context;
+    private bool enabled = true;
+    private enum Edit { Append, Transform, SwapBoard }
+    private sealed record BoardSwap(WindowContext Target, string Before, string After);
+    private BoardSwap? pendingSwap;
+    private WindowContext? heldCaps;
+    private WindowContext? releasedCaps;
+    private int shiftTap;
+    private DateTime feedbackUntil;
+    private string? feedbackMessage;
+    private DateTime tailUntil;
+    private bool refreshQueued;
+
+    public TrayApplication() : this(new KeyboardBridge()) { }
+
+    internal TrayApplication(IKeyboardBridge bridge)
+    {
+        this.bridge = bridge;
+        guide = new GuideForm(ToggleEnabled);
+        toggleItem = new ToolStripMenuItem("暂停映射", null, (_, _) => ToggleEnabled());
+        transformItem = new ToolStripMenuItem("尾字变形（X/C/Shift，实验性）") { CheckOnClick = true, Checked = true };
+        transformItem.CheckedChanged += (_, _) => ClearInputState();
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("布局与试输", null, (_, _) => { guide.Show(); guide.Activate(); });
+        menu.Items.Add(toggleItem);
+        menu.Items.Add(transformItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出", null, (_, _) => ExitThread());
+        tray = new NotifyIcon
+        {
+            Icon = SystemIcons.Application, Text = "Kana23x2", Visible = true, ContextMenuStrip = menu
+        };
+        tray.DoubleClick += (_, _) => { guide.Show(); guide.Activate(); };
+        bridge.Key += OnKey;
+        bridge.MouseActivity += InvalidateContext;
+        bridge.ExternalInput += InvalidateContext;
+        bridge.CallbackFailed += PauseOnError;
+        poll.Tick += (_, _) => RefreshContext();
+        RefreshContext();
+        poll.Start();
+        guide.Show();
+    }
+
+    private bool Ready => enabled && context is { IsInputReady: true };
+
+    private void InvalidateContext()
+    {
+        heldCaps = releasedCaps = null;
+        ClearInputState();
+        shiftTap = 0;
+        context = null;
+        QueueContextRefresh();
+    }
+
+    private void QueueContextRefresh()
+    {
+        // Query outside the hook as soon as the event is delivered, rather than
+        // waiting for the periodic poll after a focus/mode transition.
+        if (refreshQueued || !guide.IsHandleCreated || guide.IsDisposed) return;
+        refreshQueued = true;
+        guide.BeginInvoke((Action)(() =>
+        {
+            refreshQueued = false;
+            if (!guide.IsDisposed) RefreshContext();
+        }));
+    }
+
+    private void RefreshContext()
+    {
+        var next = bridge.ReadForegroundContext();
+        if (context is not null && context != next)
+        {
+            if (!next.SameTargetAs(context)) heldCaps = releasedCaps = null;
+            ClearInputState();
+            shiftTap = 0;
+        }
+        context = next;
+        string status = !enabled ? "已暂停 · Ctrl + Alt + K 启用" :
+            !next.IsJapanese ? "等待切换到日语 Microsoft IME" :
+            !next.IsKnown ? "无法确认当前 IME 状态，暂不映射按键" :
+            !next.ImeOpen || !next.NativeMode ? "请切换到日语假名「あ」输入模式" :
+            !next.FullWidthMode ? "请使用全角平假名或全角片假名模式" :
+            $"即时映射已启用 · 第 {session.Board + 1} 板 · {(next.KatakanaMode ? "片假名" : "平假名")}";
+        if (DateTime.UtcNow >= feedbackUntil) feedbackMessage = null;
+        guide.SetStatus(feedbackMessage ?? status);
+        tray.Text = feedbackMessage is null ? $"Kana23x2 · {status}" : "Kana23x2 · 请查看布局与试输窗口中的提示";
+        if (session.HistoryCount != 0 && DateTime.UtcNow >= tailUntil) ClearInputState();
+    }
+
+    private void ToggleEnabled()
+    {
+        heldCaps = releasedCaps = null;
+        enabled = !enabled;
+        ClearInputState();
+        shiftTap = 0;
+        toggleItem.Text = enabled ? "暂停映射" : "启用映射";
+        // Also runs in the low-level hook: polling stays on the timer.
+        guide.SetStatus(enabled ? "已启用，正在检查输入法状态…" : "已暂停 · Ctrl + Alt + K 启用");
+    }
+
+    private void PauseOnError(Exception error)
+    {
+        heldCaps = releasedCaps = null;
+        enabled = false;
+        ClearInputState();
+        toggleItem.Text = "启用映射";
+        Feedback("映射已暂停", error.Message);
+    }
+
+    private bool OnKey(KeyboardEvent key)
+    {
+        try { return RouteKey(key); }
+        catch (Exception error) { PauseOnError(error); return false; }
+    }
+
+    private bool RouteKey(KeyboardEvent key)
+    {
+        int vk = key.VirtualKey;
+        bool modified = key.Ctrl || key.Alt || key.Win || key.Shift;
+        if (key.IsDown)
+        {
+            if (vk != 0x14) heldCaps = null;
+            if (modified) releasedCaps = null;
+            else if (releasedCaps is not null) CompleteCapsTap();
+        }
+        // A fast typist can deliver the next key before BeginInvoke runs. Apply
+        // the preceding Shift tap first, or cancel it if a shortcut has begun.
+        if (key.IsDown && pendingSwap is { } pending)
+        {
+            if (key.Ctrl || key.Alt || key.Win || key.Shift) pendingSwap = null;
+            else CompleteBoardSwap(pending);
+        }
+        if (key.IsDown && vk == 0x4B && key.Ctrl && key.Alt && !key.Win && !key.Shift)
+        {
+            if (!key.IsRepeat) ToggleEnabled();
+            return true;
+        }
+        if (vk == 0x14)
+        {
+            shiftTap = 0;
+            if (key.IsDown && !key.IsRepeat)
+            {
+                ClearInputState();
+                heldCaps = !modified && enabled && context is { IsInputReady: true } target
+                    && bridge.CurrentTargetMatches(target) ? target : null;
+            }
+            else if (key.IsUp)
+            {
+                releasedCaps = modified ? null : heldCaps;
+                heldCaps = null;
+                if (releasedCaps is not null) guide.BeginInvoke((Action)CompleteCapsTap);
+            }
+            return false; // Windows receives the physical down, all repeats and the up.
+        }
+        if (!Ready || context is null || !bridge.CurrentTargetMatches(context))
+        {
+            ClearInputState();
+            shiftTap = 0;
+            QueueContextRefresh();
+            return false;
+        }
+        if (vk is 0x10 or 0xA0 or 0xA1)
+        {
+            if (key.IsDown)
+            {
+                if (!key.IsRepeat)
+                    shiftTap = shiftTap == 0 && !key.Ctrl && !key.Alt && !key.Win ? vk : 0;
+            }
+            else
+            {
+                if (shiftTap == vk && !key.Ctrl && !key.Alt && !key.Win)
+                {
+                    QueueBoardSwap(context);
+                }
+                shiftTap = 0;
+            }
+            return false; // Never swallow a release whose press went to the system.
+        }
+        if (!key.IsDown) return false;
+        shiftTap = 0;
+        if (key.Ctrl || key.Alt || key.Win || key.Shift)
+        {
+            InvalidateContext(); // Native mode shortcuts can retain the same HWND/HKL.
+            return false;
+        }
+        switch (vk)
+        {
+            case 0x08:
+                // The physical Backspace is delivered exactly once by Windows.
+                // A held key produces one notification per native repeat.
+                if (DateTime.UtcNow < tailUntil && session.Backspace())
+                    tailUntil = DateTime.UtcNow.AddSeconds(3);
+                else ClearInputState();
+                return false;
+            case 0x5A:
+                // Both physical Z edges belong to the mapper. Keep the focused IME untouched.
+                if (!key.IsRepeat) session.ToggleBoard();
+                return true;
+            case 0x58:
+            case 0x43:
+                if (!key.IsRepeat) Transform((char)vk);
+                return true;
+            case 0xBD:
+            case 0x6D:
+                return SendKana("ー", Edit.Append);
+        }
+        if (vk is >= 0x41 and <= 0x5A && session.TryGetKana((char)vk, context.KatakanaMode, out string kana))
+            return SendKana(kana, Edit.Append, (char)vk);
+
+        // Let the native IME handle candidate navigation, confirmation and punctuation.
+        // Leave subsequent composition in the hands of the focused input method.
+        ClearInputState();
+        if (vk is 0x15 or 0x19 or 0x1C or 0x1D) InvalidateContext();
+        return false;
+    }
+
+    private void Transform(char key)
+    {
+        if (!transformItem.Checked)
+        {
+            Feedback("尾字变形已关闭", "可在托盘菜单中启用实验性变形。");
+            return;
+        }
+        if (session.HistoryCount != 0 && DateTime.UtcNow >= tailUntil) ClearInputState();
+        if (session.Tail.Length == 0) return;
+        if (!session.TryTransform(key, out string replacement, out string unsupported))
+        {
+            if (unsupported.Length != 0)
+                Feedback("未应用此变形", $"微软罗马字接口暂不支持：{unsupported}");
+            return;
+        }
+        SendKana(replacement, Edit.Transform);
+    }
+
+    private void CompleteCapsTap()
+    {
+        var target = releasedCaps;
+        releasedCaps = null;
+        if (target is null || !enabled || !bridge.CurrentTargetMatches(target)) return;
+        try { ToggleNativeScript(target); }
+        catch (Exception error) { PauseOnError(error); }
+    }
+
+    private void ToggleNativeScript(WindowContext target)
+    {
+        ClearInputState();
+        bool katakana = !target.KatakanaMode;
+        if (bridge.TrySetKanaScript(target, katakana, out var error))
+        {
+            // The command is already queued; the next IME poll verifies the actual mode.
+            context = target with { KatakanaMode = katakana };
+            QueueContextRefresh();
+        }
+        else ReportSendFailure(error);
+    }
+
+    private void QueueBoardSwap(WindowContext target)
+    {
+        if (!transformItem.Checked || DateTime.UtcNow >= tailUntil ||
+            !session.TryPlanBoardSwap(out string replacement)) return;
+        var swap = new BoardSwap(target, session.Tail, replacement);
+        pendingSwap = swap;
+        // Let the physical Shift-up reach Windows before sending replacement letters.
+        guide.BeginInvoke((Action)(() =>
+        {
+            try { CompleteBoardSwap(swap); }
+            catch (Exception error) { PauseOnError(error); }
+        }));
+    }
+
+    private void CompleteBoardSwap(BoardSwap swap)
+    {
+        if (!ReferenceEquals(pendingSwap, swap)) return;
+        pendingSwap = null;
+        if (!Ready || context != swap.Target || !transformItem.Checked ||
+            session.Tail != swap.Before || DateTime.UtcNow >= tailUntil ||
+            !bridge.CurrentTargetMatches(swap.Target)) return;
+        SendKana(swap.After, Edit.SwapBoard);
+    }
+
+    private bool SendKana(string kana, Edit edit, char? sourceKey = null)
+    {
+        if (context is null) return false;
+        if (edit == Edit.Append && DateTime.UtcNow >= tailUntil) ClearInputState();
+        if (!Romanization.TryEncode(kana, out var runs, out string unsupported))
+        {
+            ClearInputState();
+            Feedback("未发送", $"无法编码：{unsupported}");
+            return true;
+        }
+        string? error;
+        bool sent = edit == Edit.Append
+            ? bridge.TrySendReading(context, runs, out error)
+            : bridge.TryReplaceLastKana(context, runs, out error);
+        if (!sent)
+        {
+            ReportSendFailure(error);
+            return true;
+        }
+        if (edit == Edit.Append)
+            session.Remember(kana, sourceKey);
+        else
+            session.ReplaceTail(kana, swapBoard: edit == Edit.SwapBoard);
+        tailUntil = DateTime.UtcNow.AddSeconds(3);
+        return true;
+    }
+
+    private void ReportSendFailure(string? error)
+    {
+        ClearInputState();
+        if (bridge.LastSendWasPartial)
+        {
+            enabled = false;
+            toggleItem.Text = "启用映射";
+            Feedback("输入未完整送达 · 已暂停", error ?? "请检查目标文字，不要重复发送。");
+        }
+        else Feedback("未发送", error ?? "请检查目标窗口与输入法状态。");
+    }
+
+    private void Feedback(string title, string message)
+    {
+        // The guide and tray display the message on their next refresh without creating a window.
+        feedbackMessage = $"{title} · {message}";
+        feedbackUntil = DateTime.UtcNow.AddSeconds(4);
+    }
+
+    private void ClearInputState()
+    {
+        pendingSwap = null;
+        session.ClearTail();
+        tailUntil = DateTime.MinValue;
+    }
+
+    protected override void ExitThreadCore()
+    {
+        poll.Stop();
+        bridge.Dispose();
+        tray.Visible = false;
+        guide.Exit();
+        base.ExitThreadCore();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            poll.Dispose();
+            bridge.Dispose();
+            tray.Dispose();
+            guide.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+}
