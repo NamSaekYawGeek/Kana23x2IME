@@ -8,10 +8,11 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Kana23x2</AssemblyName>
     <RootNamespace>Kana23x2.Desktop</RootNamespace>
-    <Version>0.3.2</Version>
+    <Version>0.3.3</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Kana23x2.Desktop.Tests" />
     <ProjectReference Include="../Kana23x2.Core/Kana23x2.Core.csproj" />
   </ItemGroup>
 </Project>

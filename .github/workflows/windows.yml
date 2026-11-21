@@ -26,6 +26,8 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Test layout, transforms and roman encoding
         run: dotnet run --project windows/Kana23x2.Core.Tests -c Release
+      - name: Test desktop input routing with a simulated IME
+        run: dotnet run --project windows/Kana23x2.Desktop.Tests -c Release
       - name: Publish self-contained Windows x64 app
         run: >-
           dotnet publish windows/Kana23x2.Desktop -c Release -r win-x64

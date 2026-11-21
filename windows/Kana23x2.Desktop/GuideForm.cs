@@ -15,7 +15,7 @@ internal sealed class GuideForm : Form
         Font = new Font("Microsoft YaHei UI", 10);
 
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6 };
-        foreach (int height in new[] { 40, 128, 194, 54, 30 })
+        foreach (int height in new[] { 40, 125, 215, 54, 30 })
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.Controls.Add(status, 0, 0);
@@ -25,21 +25,23 @@ internal sealed class GuideForm : Form
             Text = "1. 安装日语 Microsoft IME，使用罗马字输入、全角假名和默认微软快捷键配置。\n" +
                    "2. 点击输入框，按 Kana23x2 布局打字：每次按键立即进入目标输入框。\n" +
                    "3. 空格转换／展开系统候选，方向键选词、Enter 确认，均由微软 IME 处理。\n" +
-                   "4. X/C 实验性替换最近 3 秒内输入的尾字；先在下方空白区验证，再用于其他应用。\n" +
-                   "Ctrl + Alt + K 暂停／启用。遇到变形不兼容，可在托盘中关闭 X/C 尾字变形。"
+                   "4. 可在下方试用 X/C/Shift，也可在托盘关闭尾字变形。\n" +
+                   "Ctrl + Alt + K 暂停／启用。系统候选内容与排序沿用微软 IME 的设置和学习结果。"
         }, 0, 1);
 
         var layout = new TextBox
         {
             Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, TabStop = false,
+            WordWrap = false, ScrollBars = ScrollBars.Horizontal,
             BorderStyle = BorderStyle.None, BackColor = SystemColors.Control,
             Font = new Font("Yu Gothic UI", 12),
             Text = "键位     Q W E R T Y U I O P   /   A S D F G H J K L   /   V B N M\r\n" +
                    "第一板   あ い う え お か き く け こ  /  さ し す せ そ た ち つ て  /  と や ゆ よ\r\n" +
                    "第二板   な に ぬ ね の は ひ ふ へ ほ  /  ま み む め も ら り る れ  /  ろ わ を ん\r\n\r\n" +
                    "Z：换板     X：浊音     C：第一板小假名／第二板半浊音\r\n" +
-                   "单独轻按 Shift：切换后续平／片假名     -：长音\r\n" +
-                   "按住 Shift 的组合及 Ctrl／Alt／Win 快捷键保持系统行为。"
+                   "CapsLock：平／片假名     -：长音\r\n" +
+                   "单独 Shift：尾字换另一板基础假名（まま ↔ まさ），当前板号不变\r\n" +
+                   "连续编辑时，退格后 3 秒内可用 X/C/Shift 修改前一个假名。"
         };
         content.Controls.Add(layout, 0, 2);
 

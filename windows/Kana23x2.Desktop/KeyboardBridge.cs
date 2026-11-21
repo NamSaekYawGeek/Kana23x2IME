@@ -14,7 +14,7 @@ public readonly record struct KeyboardEvent(
 /// UI-thread keyboard bridge. This object needs a running Windows message loop.
 /// It sends ordinary key events to the IME and never reads another process's HIMC.
 /// </summary>
-public sealed class KeyboardBridge : IDisposable
+public sealed class KeyboardBridge : IKeyboardBridge
 {
     private readonly NativeMethods.HookProc _keyboardCallback;
     private readonly NativeMethods.HookProc _mouseCallback;
@@ -74,14 +74,21 @@ public sealed class KeyboardBridge : IDisposable
     }
 
     /// <summary>
-    /// Atomically queues romaji and an optional, explicit one-shot script request.
+    /// Atomically queues romaji without changing the native kana script.
     /// Ordinary input follows the native IME mode; RomanRun.Katakana is not a command.
     /// A successful result means queued, not that an application has processed it.
     /// A partial result must never be retried automatically.
     /// </summary>
     public bool TrySendReading(WindowContext expected, IReadOnlyList<RomanRun> runs,
-        bool? requestedKatakana, out string? error) =>
-        TryInject(expected, runs, requestedKatakana, replaceLastKana: false, out error);
+        out string? error) =>
+        TryInject(expected, runs, replaceLastKana: false, out error);
+
+    /// <summary>
+    /// Immediately sends only the deliberate kana-mode command. This does not
+    /// queue text or leave a pending mode request attached to a later character.
+    /// </summary>
+    public bool TrySetKanaScript(WindowContext expected, bool katakana, out string? error) =>
+        TrySendPlan(expected, BuildScriptPlan(katakana), out error);
 
     /// <summary>
     /// Sends one native Backspace followed by replacement romaji in a single batch.
@@ -91,35 +98,42 @@ public sealed class KeyboardBridge : IDisposable
     /// </summary>
     public bool TryReplaceLastKana(WindowContext expected, IReadOnlyList<RomanRun> replacement,
         out string? error) =>
-        TryInject(expected, replacement, null, replaceLastKana: true, out error);
+        TryInject(expected, replacement, replaceLastKana: true, out error);
 
     private bool TryInject(WindowContext expected, IReadOnlyList<RomanRun> runs,
-        bool? requestedKatakana, bool replaceLastKana, out string? error)
+        bool replaceLastKana, out string? error)
     {
         LastSendWasPartial = false;
+        if (!CanSend(expected, out error)) return false;
+        if (!TryBuildInputPlan(runs, replaceLastKana,
+                character => NativeMethods.VkKeyScanExW(character, expected.Layout), out var batch, out error))
+            return false;
+        return TrySendPlan(expected, batch, out error);
+    }
+
+    private bool CanSend(WindowContext expected, out string? error)
+    {
         error = null;
         if (_disposed || !expected.IsInputReady || !CurrentTargetMatches(expected))
         {
-            error = "输入目标或输入法状态已改变；未发送文字。";
+            error = "输入目标或输入法状态已改变；未发送按键。";
             return false;
         }
         if (ModifiersPhysicallyDown())
         {
-            error = "请先松开 Shift、Ctrl、Alt 和 Windows 键；未发送文字。";
+            error = "请先松开 Shift、Ctrl、Alt 和 Windows 键；未发送按键。";
             return false;
         }
-        if (!TryBuildInputPlan(runs, expected.KatakanaMode, requestedKatakana, replaceLastKana,
-                character => NativeMethods.VkKeyScanExW(character, expected.Layout), out var batch, out error))
-            return false;
+        return true;
+    }
+
+    private bool TrySendPlan(WindowContext expected, NativeMethods.Input[] batch, out string? error)
+    {
+        LastSendWasPartial = false;
+        // Also rechecks immediately before SendInput after a character plan was built.
+        if (!CanSend(expected, out error)) return false;
         if (batch.Length == 0)
             return true;
-
-        // Recheck immediately before SendInput: preparing a long reading may take time.
-        if (ModifiersPhysicallyDown() || !CurrentTargetMatches(expected))
-        {
-            error = "输入目标或按键状态已改变；未发送文字。";
-            return false;
-        }
 
         var sent = NativeMethods.SendInput((uint)batch.Length, batch, Marshal.SizeOf<NativeMethods.Input>());
         if (sent == batch.Length)
@@ -140,8 +154,8 @@ public sealed class KeyboardBridge : IDisposable
     /// Tests supply a character resolver; production supplies VkKeyScanExW for the
     /// target layout. A failed plan always returns an empty batch.
     /// </summary>
-    internal static bool TryBuildInputPlan(IReadOnlyList<RomanRun> runs, bool currentKatakana,
-        bool? requestedKatakana, bool replaceLastKana, Func<char, short> resolveKey,
+    internal static bool TryBuildInputPlan(IReadOnlyList<RomanRun> runs,
+        bool replaceLastKana, Func<char, short> resolveKey,
         out NativeMethods.Input[] batch, out string? error)
     {
         batch = [];
@@ -160,16 +174,10 @@ public sealed class KeyboardBridge : IDisposable
             // script. Validate the complete plan before delivering the Backspace.
             AddKey(inputs, 0x08);
         }
-        else if (requestedKatakana is { } requested && requested != currentKatakana)
-        {
-            AddScriptRequest(inputs, requested);
-        }
-
         foreach (var run in runs)
         {
             if (string.IsNullOrEmpty(run.Keys)) continue;
-            // The single explicit request above is the only script operation.
-            // Neither this run nor a subsequent run can implicitly change modes.
+            // Script metadata describes kana; it is never a native mode command.
             foreach (var character in run.Keys)
             {
                 if (!(character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '\'' or '.' or ',')
@@ -183,6 +191,15 @@ public sealed class KeyboardBridge : IDisposable
         batch = inputs.ToArray();
         return true;
     }
+
+    /// <summary>Builds an immediate mode-only command, separate from character plans.</summary>
+    internal static NativeMethods.Input[] BuildScriptPlan(bool katakana) => katakana
+        ? [NativeMethods.Input.Key(NativeMethods.VkLShift),
+           NativeMethods.Input.Key(NativeMethods.VkImeOn),
+           NativeMethods.Input.Key(NativeMethods.VkImeOn, true),
+           NativeMethods.Input.Key(NativeMethods.VkLShift, true)]
+        : [NativeMethods.Input.Key(NativeMethods.VkImeOn),
+           NativeMethods.Input.Key(NativeMethods.VkImeOn, true)];
 
     private bool ReleasePartialDowns(NativeMethods.Input[] batch, uint sent)
     {
@@ -239,16 +256,6 @@ public sealed class KeyboardBridge : IDisposable
         new[] { 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C }
             .Any(key => _down.Contains(key) || NativeMethods.GetAsyncKeyState(key) < 0);
 
-    private static void AddScriptRequest(List<NativeMethods.Input> inputs, bool katakana)
-    {
-        // Dedicated IME On has explicit Japanese IME semantics across composition
-        // states: IME On -> Hiragana; Shift+IME On -> full-width Katakana.
-        // Avoid Caps Lock/Eisu and release synthetic Shift before any roman letters.
-        if (katakana) inputs.Add(NativeMethods.Input.Key(NativeMethods.VkLShift));
-        AddKey(inputs, NativeMethods.VkImeOn);
-        if (katakana) inputs.Add(NativeMethods.Input.Key(NativeMethods.VkLShift, true));
-    }
-
     private static bool TryAddCharacter(List<NativeMethods.Input> inputs, short mapping)
     {
         if (mapping == -1)
@@ -299,10 +306,11 @@ public sealed class KeyboardBridge : IDisposable
         else
             _down.Remove(key);
         var alreadySuppressed = _suppressed.Contains(key);
+        var observedBackspaceRepeat = isDown && repeat && !alreadySuppressed && key == 0x08;
         // Ownership belongs to the first down until the matching up. In particular,
         // enabling mapping while a previously delivered key is held must not steal
         // its repeats/up (or let the controller append those repeats to its buffer).
-        if (isDown && repeat && !alreadySuppressed)
+        if (isDown && repeat && !alreadySuppressed && !observedBackspaceRepeat)
         {
             // A native repeat may still commit/edit newly injected text (e.g. a
             // held Enter). Invalidate the tracked tail without offering capture.
@@ -311,7 +319,7 @@ public sealed class KeyboardBridge : IDisposable
         }
         var handled = false;
         var previousUndeliveredDown = _currentUndeliveredDown;
-        _currentUndeliveredDown = isDown ? key : -1;
+        _currentUndeliveredDown = isDown && !repeat ? key : -1;
         try
         {
             var ev = new KeyboardEvent(key, isDown, repeat,
@@ -331,6 +339,12 @@ public sealed class KeyboardBridge : IDisposable
         {
             _currentUndeliveredDown = previousUndeliveredDown;
         }
+
+        // Native held Backspace still needs one controller notification per delete,
+        // but ownership remains with the original delivered down regardless of the
+        // callback's return value. It can never be captured partway through a hold.
+        if (observedBackspaceRepeat)
+            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
 
         if (isDown && (handled || alreadySuppressed))
         {

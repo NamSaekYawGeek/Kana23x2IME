@@ -11,9 +11,16 @@ public static class KeyboardPlanTests
             // Script metadata, even alternating or contrary to the native mode,
             // must not manufacture an IME mode key for ordinary mapped input.
             RomanRun[] runs = [new(!nativeKatakana, "a"), new(nativeKatakana, "ni")];
-            var batch = Plan(runs, nativeKatakana, null, false);
+            var batch = Plan(runs, false);
             Expect(batch, Down(0x41), Up(0x41), Down(0x4E), Up(0x4E), Down(0x49), Up(0x49));
         }
+
+        // A layout may require Shift for punctuation. Its release must precede
+        // the next roman letter, without leaking a modifier into the IME input.
+        Require(KeyboardBridge.TryBuildInputPlan([new(false, "'a")], false,
+            c => c == '\'' ? (short)0x0137 : ResolveAscii(c), out var shifted, out var error),
+            $"Shifted punctuation should encode: {error}");
+        Expect(shifted, Down(0xA0), Down(0x37), Up(0x37), Up(0xA0), Down(0x41), Up(0x41));
     }
 
     public static void BoardRoundTripFollowsNativeScript()
@@ -28,10 +35,9 @@ public static class KeyboardPlanTests
                 if (index != 0) session.ToggleBoard(); // Physical Q, Z, Q, Z, Q.
                 Require(session.TryGetKana('Q', nativeKatakana, out string kana), "Q should map.");
                 Require(kana == expectedKana[index], "Board/script mapping differs from native mode.");
-                Require(session.RequestedKatakana is null, "Z must not create a script request.");
                 Require(Romanization.TryEncode(kana, out var runs, out _), "Mapped Q must encode.");
-                emitted.AddRange(Plan(runs, nativeKatakana, session.RequestedKatakana, false));
-                session.Remember(kana);
+                emitted.AddRange(Plan(runs, false));
+                session.Remember(kana, 'Q');
             }
             Expect(emitted.ToArray(),
                 Down(0x41), Up(0x41),
@@ -40,36 +46,26 @@ public static class KeyboardPlanTests
         }
     }
 
-    public static void ExplicitScriptRequestPrecedesKana()
+    public static void CapsScriptCommandIsStandalone()
     {
-        foreach (bool nativeKatakana in new[] { false, true })
+        foreach (bool requestedKatakana in new[] { false, true })
         {
-            var session = new DirectInputSession();
-            session.ToggleScript(nativeKatakana);
-            Require(session.RequestedKatakana == !nativeKatakana, "Shift must request the other script.");
-            Require(session.TryGetKana('Q', nativeKatakana, out string kana), "Q should map.");
-            Require(Romanization.TryEncode(kana, out var runs, out _), "Q should encode.");
-            var batch = Plan(runs, nativeKatakana, session.RequestedKatakana, false);
-            if (nativeKatakana)
-                Expect(batch, Down(0x16), Up(0x16), Down(0x41), Up(0x41));
+            // Caps uses an immediate, separate native mode operation. It neither
+            // waits for a kana nor modifies a later character's event plan.
+            var command = KeyboardBridge.BuildScriptPlan(requestedKatakana);
+            if (requestedKatakana)
+                Expect(command, Down(0xA0), Down(0x16), Up(0x16), Up(0xA0));
             else
-                Expect(batch, Down(0xA0), Down(0x16), Up(0x16), Up(0xA0), Down(0x41), Up(0x41));
+                Expect(command, Down(0x16), Up(0x16));
 
-            // Consuming the successful one-shot request leaves subsequent kana
-            // following the actual observed native mode, with no repeated chord.
-            session.Remember(kana);
-            Require(session.RequestedKatakana is null, "Successful send should consume the request.");
-            Expect(Plan(runs, !nativeKatakana, session.RequestedKatakana, false), Down(0x41), Up(0x41));
-
-            // A request already matching native mode needs no event at all.
-            Expect(Plan(runs, nativeKatakana, nativeKatakana, false), Down(0x41), Up(0x41));
+            // Once Windows reports that script, subsequent Q simply follows it.
+            var session = new DirectInputSession();
+            Require(session.TryGetKana('Q', requestedKatakana, out string kana), "Q should map.");
+            Require(kana == (requestedKatakana ? "ア" : "あ"), "Q should follow observed native script.");
+            Require(Romanization.TryEncode(kana, out var runs, out _), "Q should encode.");
+            Expect(Plan(runs, false), Down(0x41), Up(0x41));
+            session.Remember(kana, 'Q');
         }
-
-        // Multiple runs still get only one explicit request, released before text.
-        RomanRun[] mixed = [new(false, "a"), new(true, "i"), new(false, "u")];
-        Expect(Plan(mixed, false, true, false),
-            Down(0xA0), Down(0x16), Up(0x16), Up(0xA0),
-            Down(0x41), Up(0x41), Down(0x49), Up(0x49), Down(0x55), Up(0x55));
     }
 
     public static void ReplacementNeverSwitchesScript()
@@ -77,21 +73,36 @@ public static class KeyboardPlanTests
         foreach (bool nativeKatakana in new[] { false, true })
         {
             var session = new DirectInputSession();
-            session.Remember(nativeKatakana ? "カ" : "か");
+            session.Remember(nativeKatakana ? "カ" : "か", 'Y');
             Require(session.TryTransform('X', out string voiced, out _), "X should voice ka.");
             Require(Romanization.TryEncode(voiced, out var runs, out _), "Voiced ka should encode.");
-            Expect(Plan(runs, nativeKatakana, null, true),
+            Expect(Plan(runs, true),
                 Down(0x08), Up(0x08), Down(0x47), Up(0x47), Down(0x41), Up(0x41));
+            Require(session.ReplaceTail(voiced), "Accepted X must update, not append, the tail.");
+            Require(session.HistoryCount == 1, "X replacement must not grow history.");
 
-            session.Remember(nativeKatakana ? "ハ" : "は");
+            // Solo Shift changes this physical Y to the opposite board's base
+            // kana, retaining native script. It is a replacement, not a mode key.
+            Require(session.TryPlanBoardSwap(out string swapped), "Y must have board provenance.");
+            Require(swapped == (nativeKatakana ? "ハ" : "は"), "Shift should swap voiced ka to base ha.");
+            Require(Romanization.TryEncode(swapped, out runs, out _), "Board counterpart should encode.");
+            Expect(Plan(runs, true),
+                Down(0x08), Up(0x08), Down(0x48), Up(0x48), Down(0x41), Up(0x41));
+            Require(session.ReplaceTail(swapped, swapBoard: true), "Accepted Shift must update provenance.");
+            Require(session.HistoryCount == 1 && session.Board == 0, "Replacement must not grow history or switch active board.");
+            Require(session.TryPlanBoardSwap(out string back), "Second Shift should restore the base counterpart.");
+            Require(back == (nativeKatakana ? "カ" : "か"), "Second Shift should return base ka.");
+
             session.ToggleBoard();
             Require(session.TryTransform('C', out string semi, out _), "Second-board C should produce pa.");
             Require(Romanization.TryEncode(semi, out runs, out _), "Pa should encode.");
-            Expect(Plan(runs, nativeKatakana, null, true),
+            Expect(Plan(runs, true),
                 Down(0x08), Up(0x08), Down(0x50), Up(0x50), Down(0x41), Up(0x41));
+            Require(session.ReplaceTail(semi), "Accepted C must update the tail.");
+            Require(session.HistoryCount == 1, "C replacement must not grow history.");
 
-            // Even conflicting metadata/requests must not switch modes in a replacement.
-            Expect(Plan([new RomanRun(!nativeKatakana, "ga")], nativeKatakana, !nativeKatakana, true),
+            // Even conflicting metadata must not switch modes in a replacement.
+            Expect(Plan([new RomanRun(!nativeKatakana, "ga")], true),
                 Down(0x08), Up(0x08), Down(0x47), Up(0x47), Down(0x41), Up(0x41));
         }
     }
@@ -102,20 +113,19 @@ public static class KeyboardPlanTests
         {
             Reject([new(false, "a漢")], replacement, ResolveAscii);
             Reject([new(false, "a?")], replacement, ResolveAscii);
-            // Fail after a valid prefix, including a pending explicit script request.
+            // Fail after a valid prefix; even replacement Backspace is withheld.
             Reject([new(false, "ag")], replacement, c => c == 'g' ? (short)-1 : ResolveAscii(c));
             Reject([new(false, "ag")], replacement, c => c == 'g' ? (short)0x0247 : ResolveAscii(c));
             Reject([new(false, "ag")], replacement, c => c == 'g' ? (short)0x0447 : ResolveAscii(c));
         }
         Reject([], true, ResolveAscii);
         Reject([new(false, "")], true, ResolveAscii);
-        Expect(Plan([], false, true, false)); // Empty input must not change IME mode either.
+        Expect(Plan([], false)); // Empty reading cannot send a standalone mode command.
     }
 
-    private static NativeMethods.Input[] Plan(IReadOnlyList<RomanRun> runs, bool currentKatakana,
-        bool? requestedKatakana, bool replacement)
+    private static NativeMethods.Input[] Plan(IReadOnlyList<RomanRun> runs, bool replacement)
     {
-        Require(KeyboardBridge.TryBuildInputPlan(runs, currentKatakana, requestedKatakana, replacement,
+        Require(KeyboardBridge.TryBuildInputPlan(runs, replacement,
             ResolveAscii, out var batch, out var error), $"Expected valid event plan: {error}");
         Require(error is null, "Successful plan returned an error.");
         return batch;
@@ -123,7 +133,7 @@ public static class KeyboardPlanTests
 
     private static void Reject(IReadOnlyList<RomanRun> runs, bool replacement, Func<char, short> resolver)
     {
-        Require(!KeyboardBridge.TryBuildInputPlan(runs, false, true, replacement, resolver,
+        Require(!KeyboardBridge.TryBuildInputPlan(runs, replacement, resolver,
             out var batch, out var error), "Invalid plan was accepted.");
         Require(batch.Length == 0, "Invalid plan leaked a prefix, possibly a Backspace or mode key.");
         Require(!string.IsNullOrEmpty(error), "Rejected plan should explain the failure.");
