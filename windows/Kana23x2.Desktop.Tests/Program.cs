@@ -19,7 +19,9 @@ internal static class Program
             ("Shift plus a letter stays native", ShiftChord),
             ("native Backspace repeats preserve earlier X/C history", BackspaceHistory),
             ("small kana still toggles after native Backspace", SmallKanaAfterBackspace),
-            ("Caps changes mode immediately and candidate keys stay native", CapsAndCandidates),
+            ("Caps passes every physical edge and switches once after release", CapsAndCandidates),
+            ("a fast kana after Caps release does not duplicate the switch", FastKanaAfterCaps),
+            ("Ctrl+Space and Caps chords stay native", NativeChords),
             ("focus change cancels a queued swap", FocusCancelsSwap),
             ("external input cancels a queued swap", ExternalCancelsSwap),
             ("a shortcut cancels a queued swap", ShortcutCancelsSwap)
@@ -129,16 +131,19 @@ internal static class Program
 
     private static void CapsAndCandidates(Fixture f)
     {
-        Check.True(f.Bridge.Down(0x14));
-        Check.Equal(1, f.Bridge.ModeCommands.Count, "Caps must switch now, without a subsequent letter.");
-        Check.True(f.Bridge.ModeCommands[0]);
+        Check.False(f.Bridge.Down(0x14));
+        Check.Equal(0, f.Bridge.ModeCommands.Count, "A held Caps key must not switch the script.");
         Check.Equal("", f.Bridge.Text);
         Check.Equal(0, f.Bridge.AppendCalls);
-        Check.True(f.Bridge.Down(0x14)); // Autorepeat is swallowed, not toggled again.
+        Check.False(f.Bridge.Down(0x14)); // Observe the repeat, but keep it native.
+        Check.Equal(0, f.Bridge.ModeCommands.Count);
         f.Bridge.Up(0x14);
+        Check.Equal(0, f.Bridge.ModeCommands.Count, "Let the physical Caps-up pass before switching.");
         Fixture.Pump();
         Check.Equal(1, f.Bridge.ModeCommands.Count);
-        Check.Equal(0, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14));
+        Check.True(f.Bridge.ModeCommands[0]);
+        Check.Equal(2, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14 && e.IsDown));
+        Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14 && e.IsUp));
         f.Tap('Q');
         Check.Equal("ア", f.Bridge.Text);
         Check.Equal(1, f.Bridge.ModeCommands.Count, "Ordinary kana must not send a script command.");
@@ -149,11 +154,61 @@ internal static class Program
         Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x20 && e.IsDown));
         Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x0D && e.IsDown));
         f.Tap(0x14);
+        Fixture.Pump();
         Check.Equal(2, f.Bridge.ModeCommands.Count);
         Check.False(f.Bridge.ModeCommands[1]);
         Check.Equal("ア", f.Bridge.Text, "A script command must not rewrite preceding text.");
         f.Tap('Q');
         Check.Equal("アあ", f.Bridge.Text);
+    }
+
+    private static void FastKanaAfterCaps(Fixture f)
+    {
+        Check.False(f.Bridge.Down(0x14));
+        f.Bridge.Up(0x14);
+        Check.Equal(0, f.Bridge.ModeCommands.Count);
+        f.Tap('Q'); // Do not dispatch the queued Caps callback first.
+        Check.Equal("ア", f.Bridge.Text);
+        Check.Equal(1, f.Bridge.ModeCommands.Count);
+        Check.Equal("script:True", f.Bridge.Operations[^2]);
+        Check.Equal("append:a", f.Bridge.Operations[^1]);
+        Fixture.Pump();
+        Check.Equal("ア", f.Bridge.Text);
+        Check.Equal(1, f.Bridge.ModeCommands.Count);
+        Check.Equal(1, f.Bridge.AppendCalls);
+        Check.Equal(2, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14));
+    }
+
+    private static void NativeChords(Fixture f)
+    {
+        Check.False(f.Bridge.Down(0xA2));
+        Check.False(f.Bridge.Down(0x20)); // Ctrl+Space belongs to Windows/the IME.
+        f.Bridge.Up(0x20);
+        f.Bridge.Up(0xA2);
+        Fixture.Pump();
+        Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x20 && e.IsDown && e.Ctrl));
+        Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x20 && e.IsUp && e.Ctrl));
+
+        Check.False(f.Bridge.Down(0xA2));
+        Check.False(f.Bridge.Down(0x14)); // Ctrl+Caps, including its repeat and release.
+        Check.False(f.Bridge.Down(0x14));
+        f.Bridge.Up(0x14);
+        f.Bridge.Up(0xA2);
+        Fixture.Pump();
+        Check.Equal(2, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14 && e.IsDown && e.Ctrl));
+        Check.Equal(1, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14 && e.IsUp && e.Ctrl));
+
+        Check.False(f.Bridge.Down(0x14)); // Starting a shortcut cancels a prospective Caps tap.
+        Check.False(f.Bridge.Down(0xA2));
+        Check.False(f.Bridge.Down(0x20));
+        f.Bridge.Up(0x20);
+        f.Bridge.Up(0xA2);
+        f.Bridge.Up(0x14);
+        Fixture.Pump();
+        Check.Equal(0, f.Bridge.ModeCommands.Count);
+        Check.Equal(0, f.Bridge.AppendCalls);
+        Check.Equal(0, f.Bridge.ReplacementAttempts);
+        Check.Equal(2, f.Bridge.Passed.Count(e => e.VirtualKey == 0x14 && e.IsUp));
     }
 
     private static void SmallKanaAfterBackspace(Fixture f)
@@ -322,14 +377,14 @@ internal sealed class FakeKeyboardBridge : IKeyboardBridge
         bool repeat = !physicalDown.Add(key);
         var ev = MakeEvent(key, true, repeat);
         bool owned = captured.Contains(key);
-        if (repeat && !owned && key != 0x08)
+        if (repeat && !owned && key is not (0x08 or 0x14))
         {
             NotifyExternalInput();
             Pass(ev);
             return false;
         }
         bool handled = Key?.Invoke(ev) ?? false;
-        if (repeat && !owned) handled = false; // Backspace observer cannot steal ownership.
+        if (repeat && !owned) handled = false; // Backspace/Caps observers cannot steal ownership.
         if (handled || owned) { captured.Add(key); return true; }
         Pass(ev);
         return false;

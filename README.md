@@ -38,7 +38,7 @@ xcrun simctl install booted Kana23x2.app
 
 ### Windows 桌面预览版
 
-Windows 版在系统托盘运行，使用同一套 23×2 布局。每次按键即时送入 **Microsoft IME**，假名直接显示在目标输入框，空格转换和选词继续使用系统候选框。桌面 0.3.3 中，CapsLock 立即切换平片，Z 切换后续输入板位，单独 Shift 将尾字换成另一板的基础假名。X／C／Shift 尾字变形采用退格后重新输入的实验性实现，需要按应用验证；不能仅凭短暂编辑记录保证文字尚未确认。
+Windows 版在系统托盘运行，使用同一套 23×2 布局。每次按键即时送入 **Microsoft IME**，假名直接显示在目标输入框，空格转换和选词继续使用系统候选框。桌面 0.3.4 中，CapsLock 原样交给 Windows，单独松开时切换平片，Z 切换后续输入板位，单独 Shift 将尾字换成另一板的基础假名。X／C／Shift 尾字变形采用退格后重新输入的实验性实现，需要按应用验证；不能仅凭短暂编辑记录保证文字尚未确认。
 
 使用 Windows 10 / 11 x64，安装微软日语 IME 并开启假名、罗马字输入模式。自包含构建包解压后运行 `Kana23x2.exe`，无需另装 .NET；`Ctrl + Alt + K` 暂停／启用。Windows 构建产物可从 **Actions → Build Windows** 获取。
 

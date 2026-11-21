@@ -10,6 +10,9 @@ public sealed record WindowContext(nint Window, nint Focus, nint Layout, uint Th
     public bool FullWidthMode { get; private init; }
     public bool KatakanaMode { get; init; }
     public bool IsInputReady => IsKnown && IsJapanese && ImeOpen && NativeMode && FullWidthMode;
+    public bool SameTargetAs(WindowContext other) =>
+        Window != 0 && Focus != 0 && Window == other.Window && Focus == other.Focus
+        && Layout == other.Layout && ThreadId == other.ThreadId;
 
     // Decode the conversion mode of the focused editor. The physical keyboard's
     // romaji setting is a setup prerequisite. An absent IME_CMODE_ROMAN bit

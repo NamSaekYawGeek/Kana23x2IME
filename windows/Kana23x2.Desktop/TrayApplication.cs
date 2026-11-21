@@ -16,6 +16,8 @@ internal sealed class TrayApplication : ApplicationContext
     private enum Edit { Append, Transform, SwapBoard }
     private sealed record BoardSwap(WindowContext Target, string Before, string After);
     private BoardSwap? pendingSwap;
+    private WindowContext? heldCaps;
+    private WindowContext? releasedCaps;
     private int shiftTap;
     private DateTime feedbackUntil;
     private string? feedbackMessage;
@@ -56,6 +58,7 @@ internal sealed class TrayApplication : ApplicationContext
 
     private void InvalidateContext()
     {
+        heldCaps = releasedCaps = null;
         ClearInputState();
         shiftTap = 0;
         context = null;
@@ -80,6 +83,7 @@ internal sealed class TrayApplication : ApplicationContext
         var next = bridge.ReadForegroundContext();
         if (context is not null && context != next)
         {
+            if (!next.SameTargetAs(context)) heldCaps = releasedCaps = null;
             ClearInputState();
             shiftTap = 0;
         }
@@ -98,6 +102,7 @@ internal sealed class TrayApplication : ApplicationContext
 
     private void ToggleEnabled()
     {
+        heldCaps = releasedCaps = null;
         enabled = !enabled;
         ClearInputState();
         shiftTap = 0;
@@ -108,6 +113,7 @@ internal sealed class TrayApplication : ApplicationContext
 
     private void PauseOnError(Exception error)
     {
+        heldCaps = releasedCaps = null;
         enabled = false;
         ClearInputState();
         toggleItem.Text = "启用映射";
@@ -123,6 +129,13 @@ internal sealed class TrayApplication : ApplicationContext
     private bool RouteKey(KeyboardEvent key)
     {
         int vk = key.VirtualKey;
+        bool modified = key.Ctrl || key.Alt || key.Win || key.Shift;
+        if (key.IsDown)
+        {
+            if (vk != 0x14) heldCaps = null;
+            if (modified) releasedCaps = null;
+            else if (releasedCaps is not null) CompleteCapsTap();
+        }
         // A fast typist can deliver the next key before BeginInvoke runs. Apply
         // the preceding Shift tap first, or cancel it if a shortcut has begun.
         if (key.IsDown && pendingSwap is { } pending)
@@ -134,6 +147,23 @@ internal sealed class TrayApplication : ApplicationContext
         {
             if (!key.IsRepeat) ToggleEnabled();
             return true;
+        }
+        if (vk == 0x14)
+        {
+            shiftTap = 0;
+            if (key.IsDown && !key.IsRepeat)
+            {
+                ClearInputState();
+                heldCaps = !modified && enabled && context is { IsInputReady: true } target
+                    && bridge.CurrentTargetMatches(target) ? target : null;
+            }
+            else if (key.IsUp)
+            {
+                releasedCaps = modified ? null : heldCaps;
+                heldCaps = null;
+                if (releasedCaps is not null) guide.BeginInvoke((Action)CompleteCapsTap);
+            }
+            return false; // Windows receives the physical down, all repeats and the up.
         }
         if (!Ready || context is null || !bridge.CurrentTargetMatches(context))
         {
@@ -168,9 +198,6 @@ internal sealed class TrayApplication : ApplicationContext
         }
         switch (vk)
         {
-            case 0x14: // Caps Lock, only without modifiers in an eligible Japanese editor.
-                if (!key.IsRepeat) ToggleNativeScript(context);
-                return true;
             case 0x08:
                 // The physical Backspace is delivered exactly once by Windows.
                 // A held key produces one notification per native repeat.
@@ -216,6 +243,15 @@ internal sealed class TrayApplication : ApplicationContext
             return;
         }
         SendKana(replacement, Edit.Transform);
+    }
+
+    private void CompleteCapsTap()
+    {
+        var target = releasedCaps;
+        releasedCaps = null;
+        if (target is null || !enabled || !bridge.CurrentTargetMatches(target)) return;
+        try { ToggleNativeScript(target); }
+        catch (Exception error) { PauseOnError(error); }
     }
 
     private void ToggleNativeScript(WindowContext target)

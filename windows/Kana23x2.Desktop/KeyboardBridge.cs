@@ -68,9 +68,7 @@ public sealed class KeyboardBridge : IKeyboardBridge
     public bool CurrentTargetMatches(WindowContext expected)
     {
         var current = ReadTarget();
-        return current.Window != 0 && current.Focus != 0
-            && expected.Window == current.Window && expected.Focus == current.Focus
-            && expected.Layout == current.Layout && expected.ThreadId == current.ThreadId;
+        return current.SameTargetAs(expected);
     }
 
     /// <summary>
@@ -306,11 +304,11 @@ public sealed class KeyboardBridge : IKeyboardBridge
         else
             _down.Remove(key);
         var alreadySuppressed = _suppressed.Contains(key);
-        var observedBackspaceRepeat = isDown && repeat && !alreadySuppressed && key == 0x08;
+        var observeNativeRepeat = isDown && repeat && !alreadySuppressed && key is 0x08 or 0x14;
         // Ownership belongs to the first down until the matching up. In particular,
         // enabling mapping while a previously delivered key is held must not steal
         // its repeats/up (or let the controller append those repeats to its buffer).
-        if (isDown && repeat && !alreadySuppressed && !observedBackspaceRepeat)
+        if (isDown && repeat && !alreadySuppressed && !observeNativeRepeat)
         {
             // A native repeat may still commit/edit newly injected text (e.g. a
             // held Enter). Invalidate the tracked tail without offering capture.
@@ -340,10 +338,8 @@ public sealed class KeyboardBridge : IKeyboardBridge
             _currentUndeliveredDown = previousUndeliveredDown;
         }
 
-        // Native held Backspace still needs one controller notification per delete,
-        // but ownership remains with the original delivered down regardless of the
-        // callback's return value. It can never be captured partway through a hold.
-        if (observedBackspaceRepeat)
+        // Backspace and Caps repeats remain native for the entire physical press.
+        if (observeNativeRepeat)
             return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
 
         if (isDown && (handled || alreadySuppressed))
