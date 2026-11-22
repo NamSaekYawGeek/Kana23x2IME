@@ -47,6 +47,13 @@ private final class SetupViewController: UIViewController {
         stack.addArrangedSubview(settings)
         addLabel("试试输入", font: .preferredFont(forTextStyle: .headline), to: stack)
         let editor = UITextView()
+        editor.accessibilityIdentifier = "keyboardTestEditor"
+#if DEBUG
+        if UserDefaults.standard.bool(forKey: "KanaUITestDarkMode") {
+            overrideUserInterfaceStyle = .dark
+            editor.keyboardAppearance = .dark
+        }
+#endif
         editor.font = .preferredFont(forTextStyle: .body)
         editor.adjustsFontForContentSizeCategory = true
         editor.backgroundColor = .secondarySystemGroupedBackground
@@ -56,7 +63,7 @@ private final class SetupViewController: UIViewController {
         editor.heightAnchor.constraint(equalToConstant: 150).isActive = true
         stack.addArrangedSubview(editor)
         addLabel("Z 切换两套假名板 · X 浊音\nC：第一板切换小假名，第二板切换半浊音\n⇧ 切换平假名 / 片假名\n\n输入中的假名显示在键盘顶部。点按假名行可原样确定，点候选词或空格可转换确定。输入中按回车先确定假名，再按一次换行。移动光标、切换输入框或关闭键盘会丢弃尚未确定的假名。", to: stack)
-        addLabel("离线转换 · 无网络访问 · 无剪贴板历史\n\niOS 在密码和部分电话号码输入框中使用系统键盘；部分 App 也可能禁止第三方键盘。此版本是原型，转换能力尚不等同于系统日语键盘。", to: stack)
+        addLabel("按住删除键可连续删除。没有待确定文字时，长按空格并左右拖动可移动光标。点候选栏右侧箭头可展开更多候选。\n\n离线转换 · 无网络访问 · 无剪贴板历史\n\niOS 在密码和部分电话号码输入框中使用系统键盘；部分 App 也可能禁止第三方键盘。本键盘使用自带词典和转换引擎，转换能力尚不等同于系统日语键盘。", to: stack)
         addLabel("词典来源：SKK Development Team，GPL-2.0-or-later。项目许可和第三方声明见仓库。", font: .preferredFont(forTextStyle: .footnote), to: stack)
     }
 
