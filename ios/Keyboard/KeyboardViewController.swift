@@ -1,6 +1,11 @@
 import UIKit
 import KanaCore
 
+/// Let a drag that starts on a candidate cancel its tap and scroll the strip.
+private final class CandidateScrollView: UIScrollView {
+    override func touchesShouldCancel(in view: UIView) -> Bool { true }
+}
+
 /// Composition stays inside the extension until explicitly committed.
 final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate {
     private enum Panel { case kana, numbers, symbols, emoji }
@@ -19,12 +24,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let vertical = UIStackView()
     private let header = UIView()
     private let draftButton = UIButton(type: .system)
-    private let candidateScroll = UIScrollView()
+    private let candidateScroll = CandidateScrollView()
     private let candidateRow = UIStackView()
     private let expandButton = UIButton(type: .system)
     private let keyRows = UIStackView()
     private let bottomRow = UIStackView()
-    private let expandedScroll = UIScrollView()
+    private let expandedScroll = CandidateScrollView()
     private let expandedRows = UIStackView()
     private let previewLabel = UILabel()
     private weak var previewKey: KeyboardKeyButton?

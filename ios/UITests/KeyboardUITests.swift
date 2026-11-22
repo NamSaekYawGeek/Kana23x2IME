@@ -105,7 +105,11 @@ final class KeyboardUITests: XCTestCase {
         try tapSettingsRow("Keyboards")
 
         if !kanaSettingsRow.exists {
-            try tapSettingsRow("Add New Keyboard…", alternative: "Add New Keyboard...")
+            // iOS 26 exposes this as a button with identifier AddNewKeyboard;
+            // its visible English label no longer includes an ellipsis.
+            try tapSettingsRow("AddNewKeyboard", alternatives: [
+                "Add New Keyboard", "Add New Keyboard…", "Add New Keyboard..."
+            ])
             try require(kanaSettingsRow,
                         "Settings did not list 23×2 Kana as an available third-party keyboard")
             kanaSettingsRow.tap()
@@ -126,8 +130,8 @@ final class KeyboardUITests: XCTestCase {
         return settings.staticTexts.matching(predicate).firstMatch
     }
 
-    private func tapSettingsRow(_ title: String, alternative: String? = nil) throws {
-        let titles = [title, alternative].compactMap { $0 }
+    private func tapSettingsRow(_ title: String, alternatives: [String] = []) throws {
+        let titles = [title] + alternatives
         for attempt in 0..<8 {
             for name in titles {
                 let cell = settings.cells.containing(.staticText, identifier: name).firstMatch
