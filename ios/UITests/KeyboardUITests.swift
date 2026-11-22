@@ -96,11 +96,13 @@ final class KeyboardUITests: XCTestCase {
             if settings.navigationBars["Settings"].exists { break }
             let back = ["Keyboard", "General", "Settings", "Apps", "Back"]
                 .map { settings.navigationBars.buttons[$0].firstMatch }
-                .first { $0.exists && $0.isHittable }
+                .first { canTap($0, in: settings) }
             guard let back = back else { break }
             back.tap()
         }
         try tapSettingsRow("General")
+        try require(settings.navigationBars["General"], "Settings did not open General",
+                    application: settings)
         try tapSettingsRow("Keyboard")
         try tapSettingsRow("Keyboards")
 
@@ -111,13 +113,14 @@ final class KeyboardUITests: XCTestCase {
                 "Add New Keyboard", "Add New Keyboard…", "Add New Keyboard..."
             ])
             try require(kanaSettingsRow,
-                        "Settings did not list 23×2 Kana as an available third-party keyboard")
-            kanaSettingsRow.tap()
+                        "Settings did not list 23×2 Kana as an available third-party keyboard",
+                        application: settings)
+            try tapKanaSettingsRow()
         }
         try require(settings.navigationBars["Keyboards"],
-                    "Settings did not return to the enabled Keyboards list")
+                    "Settings did not return to the enabled Keyboards list", application: settings)
         try require(kanaSettingsRow,
-                    "23×2 Kana was not added to the enabled Keyboards list")
+                    "23×2 Kana was not added to the enabled Keyboards list", application: settings)
     }
 
     private var kanaSettingsRow: XCUIElement {
@@ -134,18 +137,46 @@ final class KeyboardUITests: XCTestCase {
         let titles = [title] + alternatives
         for attempt in 0..<8 {
             for name in titles {
-                let cell = settings.cells.containing(.staticText, identifier: name).firstMatch
-                if cell.exists && cell.isHittable { cell.tap(); return }
-                let label = settings.staticTexts[name].firstMatch
-                if label.exists && label.isHittable { label.tap(); return }
+                // Prefer the concrete row/button identifier when Settings
+                // exposes one; virtualized ancestor cells may have no frame.
                 let button = settings.buttons[name].firstMatch
-                if button.exists && button.isHittable { button.tap(); return }
+                if canTap(button, in: settings) { button.tap(); return }
+                let identifiedCell = settings.cells[name].firstMatch
+                if canTap(identifiedCell, in: settings) { identifiedCell.tap(); return }
+                let cell = settings.cells.containing(.staticText, identifier: name).firstMatch
+                if canTap(cell, in: settings) { cell.tap(); return }
+                let label = settings.staticTexts[name].firstMatch
+                if canTap(label, in: settings) { label.tap(); return }
             }
             if attempt < 7 { settings.swipeUp() }
         }
         attachHierarchy(settings, name: "Settings navigation failure")
         XCTFail("Settings row not found: \(title)")
         throw UIError.missing(title)
+    }
+
+    private func tapKanaSettingsRow() throws {
+        for attempt in 0..<8 {
+            let row = kanaSettingsRow
+            if canTap(row, in: settings) { row.tap(); return }
+            if attempt < 7 { settings.swipeUp() }
+        }
+        attachHierarchy(settings, name: "Keyboard registration row failure")
+        XCTFail("The available 23×2 Kana keyboard row could not be tapped")
+        throw UIError.missing(keyboardName)
+    }
+
+    private func canTap(_ element: XCUIElement, in application: XCUIApplication) -> Bool {
+        guard element.exists else { return false }
+        let frame = element.frame
+        // UIKit/SwiftUI can expose offscreen Settings rows with {{inf, inf},
+        // {0, 0}}. Querying isHittable on those raises an XCTest failure rather
+        // than returning false, so check geometry before requesting hit testing.
+        guard frame.origin.x.isFinite, frame.origin.y.isFinite,
+              frame.width.isFinite, frame.height.isFinite,
+              frame.width > 0, frame.height > 0,
+              frame.intersects(application.frame) else { return false }
+        return element.isHittable
     }
 
     private func activateKanaKeyboard() throws {
@@ -155,7 +186,7 @@ final class KeyboardUITests: XCTestCase {
             "Next keyboard", "Next keyboard", "Switch keyboard")
         for _ in 0..<6 {
             let globe = host.descendants(matching: .any).matching(globePredicate).firstMatch
-            guard globe.waitForExistence(timeout: 2), globe.isHittable else { break }
+            guard globe.waitForExistence(timeout: 2), canTap(globe, in: host) else { break }
             globe.tap()
             if host.descendants(matching: .any)["kana-key-Q"].firstMatch.waitForExistence(timeout: 2) { return }
         }
@@ -177,8 +208,12 @@ final class KeyboardUITests: XCTestCase {
 
     @discardableResult
     private func require(_ element: XCUIElement, _ message: String,
-                         timeout: TimeInterval = 10) throws -> XCUIElement {
-        try XCTUnwrap(element.waitForExistence(timeout: timeout) ? element : nil, message)
+                         timeout: TimeInterval = 10,
+                         application: XCUIApplication? = nil) throws -> XCUIElement {
+        if element.waitForExistence(timeout: timeout) { return element }
+        attachHierarchy(application ?? host, name: "Missing required UI element")
+        XCTFail(message)
+        throw UIError.missing(message)
     }
 
     private func key(_ identifier: String) throws -> XCUIElement {

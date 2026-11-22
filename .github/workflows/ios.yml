@@ -43,28 +43,6 @@ jobs:
           -destination 'generic/platform=iOS'
           -derivedDataPath ios/build/device
           CODE_SIGNING_ALLOWED=NO build
-      - name: Test installed keyboard on iPhone simulator
-        run: |
-          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
-          SIMULATOR_ID=$(python3 - <<'PY'
-          import json, subprocess
-          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
-          for runtime, entries in sorted(devices.items(), reverse=True):
-              if 'iOS' in runtime:
-                  for device in entries:
-                      if device['name'].startswith('iPhone'):
-                          print(device['udid'])
-                          raise SystemExit
-          raise SystemExit('No available iPhone simulator')
-          PY
-          )
-          xcrun simctl boot "$SIMULATOR_ID"
-          xcrun simctl bootstatus "$SIMULATOR_ID" -b
-          xcrun simctl ui "$SIMULATOR_ID" appearance light
-          xcodebuild test -project ios/Kana23x2.xcodeproj -scheme Kana23x2 \
-            -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
-            -derivedDataPath ios/build/uitest -resultBundlePath ios/build/KeyboardUITests.xcresult \
-            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Package build outputs
         run: |
           ditto -c -k --keepParent ios/build/simulator/Build/Products/Debug-iphonesimulator/Kana23x2.app ios/Kana23x2-simulator.zip
@@ -79,6 +57,30 @@ jobs:
             ios/Kana23x2-unsigned.ipa
             ios/Kana23x2-unsigned.ipa.sha256
           if-no-files-found: error
+      - name: Test installed keyboard on iPhone simulator
+        timeout-minutes: 15
+        run: |
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
+          SIMULATOR_ID=$(python3 - <<'PY'
+          import json, subprocess
+          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True).strip()
+          runtime = 'com.apple.CoreSimulator.SimRuntime.iOS-' + sdk.replace('.', '-')
+          for device in devices.get(runtime, []):
+              if device['name'].startswith('iPhone'):
+                  print(device['udid'])
+                  raise SystemExit
+          raise SystemExit(f'No available iPhone simulator matching Xcode SDK {sdk}')
+          PY
+          )
+          xcrun simctl boot "$SIMULATOR_ID"
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          xcrun simctl ui "$SIMULATOR_ID" appearance light
+          xcodebuild test -project ios/Kana23x2.xcodeproj -scheme Kana23x2 \
+            -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath ios/build/uitest -resultBundlePath ios/build/KeyboardUITests.xcresult \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 300 CODE_SIGNING_ALLOWED=NO
       - name: Export simulator test screenshots
         if: always()
         run: |
