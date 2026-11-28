@@ -20,6 +20,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private lazy var engine = CandidateEngine(dictionaryURL:
         Bundle.main.url(forResource: "skk_compact", withExtension: "tsv") ??
         Bundle.main.url(forResource: "modern_terms", withExtension: "tsv"))
+    private lazy var feedback = KeyboardFeedback(view: view) { [weak self] in
+        self?.hasFullAccess == true
+    }
 
     private let vertical = UIStackView()
     private let header = UIView()
@@ -32,6 +35,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let expandedScroll = CandidateScrollView()
     private let expandedRows = UIStackView()
     private let previewLabel = UILabel()
+    private let feedbackPanel = UIStackView()
+    private let soundSwitch = UISwitch()
+    private let hapticsSwitch = UISwitch()
+    private let feedbackAccessNote = UILabel()
+    private var feedbackVisible = false
+    private var previewGeneration = 0
     private weak var previewKey: KeyboardKeyButton?
     private var spaceKey: KeyboardKeyButton?
     private var returnKey: KeyboardKeyButton?
@@ -74,7 +83,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
          "✨", "🔥", "💯", "✅", "❌", "⭕", "❗", "❓", "🚀", "🎉",
          "😺", "🐶", "🐼", "🌸", "🌈", "☀️", "🌙", "🍀", "🍵", "🍙"]
     ]
-
+    override func loadView() {
+        let keyboard = KeyboardInputView(frame: .zero, inputViewStyle: .keyboard)
+        keyboard.allowsSelfSizing = true
+        inputView = keyboard
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -115,6 +128,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         ])
         expandedScroll.isHidden = true
         vertical.addArrangedSubview(expandedScroll)
+        configureFeedbackPanel()
+        vertical.addArrangedSubview(feedbackPanel)
         bottomRow.axis = .horizontal
         bottomRow.spacing = 6
         bottomHeight = bottomRow.heightAnchor.constraint(equalToConstant: 44)
@@ -134,6 +149,60 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(previewLabel)
         rebuildKeys()
         refreshCandidates()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        updateFeedbackPanel()
+        feedback.prepare()
+    }
+
+    private func configureFeedbackPanel() {
+        feedbackPanel.axis = .vertical
+        feedbackPanel.spacing = 4
+        feedbackPanel.isHidden = true
+        feedbackPanel.accessibilityIdentifier = "feedback-settings-panel"
+        for (title, control, identifier) in [
+            ("按键声音", soundSwitch, "feedback-sound-switch"),
+            ("轻触震动", hapticsSwitch, "feedback-haptics-switch")
+        ] {
+            let label = UILabel()
+            label.text = title
+            label.font = .systemFont(ofSize: 16)
+            let row = UIStackView(arrangedSubviews: [label, control])
+            row.alignment = .center
+            row.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+            row.isLayoutMarginsRelativeArrangement = true
+            row.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            control.accessibilityIdentifier = identifier
+            control.accessibilityLabel = title
+            control.addTarget(self, action: #selector(feedbackPreferenceChanged(_:)), for: .valueChanged)
+            feedbackPanel.addArrangedSubview(row)
+        }
+        feedbackAccessNote.font = .systemFont(ofSize: 11)
+        feedbackAccessNote.numberOfLines = 0
+        feedbackAccessNote.accessibilityIdentifier = "feedback-access-note"
+        feedbackPanel.addArrangedSubview(feedbackAccessNote)
+        feedbackPanel.addArrangedSubview(UIView())
+        updateFeedbackPanel()
+    }
+
+    private func updateFeedbackPanel() {
+        soundSwitch.isOn = feedback.soundEnabled
+        hapticsSwitch.isOn = feedback.hapticsEnabled
+        feedbackAccessNote.text = hasFullAccess
+            ? "声音遵循系统键盘声音设置；触感使用这里的开关，并受设备和系统限制。"
+            : "声音与震动需在设置 → 键盘 → 23×2 Kana 中允许完全访问。输入仍可离线使用。"
+        feedbackAccessNote.textColor = textColor.withAlphaComponent(0.7)
+        for row in feedbackPanel.arrangedSubviews.compactMap({ $0 as? UIStackView }) {
+            (row.arrangedSubviews.first as? UILabel)?.textColor = textColor
+        }
+    }
+
+    @objc private func feedbackPreferenceChanged(_ sender: UISwitch) {
+        if sender === soundSwitch { feedback.soundEnabled = sender.isOn }
+        else { feedback.hapticsEnabled = sender.isOn }
+        feedback.prepare()
     }
 
     private func configureHeader() {
@@ -216,6 +285,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillDisappear(_ animated: Bool) {
         cancelInteractions()
+        feedbackVisible = false
+        feedbackPanel.isHidden = true
         resetDraft()
         super.viewWillDisappear(animated)
     }
@@ -249,6 +320,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         expandButton.tintColor = textColor
         previewLabel.textColor = textColor
         previewLabel.layer.backgroundColor = keyColor.cgColor
+        updateFeedbackPanel()
         renderCandidates()
     }
 
@@ -266,11 +338,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard let self = self else { return }
             action(self)
         }
+        key.onFeedback = { [weak self] in self?.feedback.keyPressed() }
         if preview {
             key.onPreviewChange = { [weak self, weak key] visible in
                 guard let self = self, let key = key else { return }
                 if visible { self.showPreview(for: key, text: title) }
-                else if self.previewKey === key { self.hidePreview() }
+                else if self.previewKey === key { self.hidePreview(animated: true) }
             }
         }
         key.applyAppearance(isDark: isDark)
@@ -279,6 +352,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func showPreview(for key: KeyboardKeyButton, text: String) {
         guard !UIAccessibility.isVoiceOverRunning else { return }
+        previewGeneration += 1
+        previewLabel.layer.removeAllAnimations()
+        previewLabel.alpha = 1
         let rect = key.convert(key.bounds, to: view)
         let width = max(50, rect.width + 16)
         previewLabel.frame = CGRect(
@@ -292,9 +368,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.bringSubviewToFront(previewLabel)
     }
 
-    private func hidePreview() {
-        previewLabel.isHidden = true
+    private func hidePreview(animated: Bool = false) {
+        previewGeneration += 1
+        let generation = previewGeneration
         previewKey = nil
+        guard animated, !previewLabel.isHidden else {
+            previewLabel.layer.removeAllAnimations()
+            previewLabel.isHidden = true
+            previewLabel.alpha = 1
+            return
+        }
+        UIView.animate(withDuration: 0.08, delay: 0.03,
+                       options: [.allowUserInteraction, .beginFromCurrentState]) {
+            self.previewLabel.alpha = 0
+        } completion: { [weak self] _ in
+            guard let self = self, self.previewGeneration == generation else { return }
+            self.previewLabel.isHidden = true
+            self.previewLabel.alpha = 1
+        }
     }
 
     private func cancelInteractions() {
@@ -391,7 +482,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clear(bottomRow)
         let toggle = button(panel == .kana ? "123" : "かな", id: "panel-toggle-key",
                             accessibility: panel == .kana ? "数字键盘" : "假名键盘", modifier: true) {
-            if $0.expanded { $0.setExpanded(false) }
+            if $0.feedbackVisible { $0.setFeedbackVisible(false) }
+            else if $0.expanded { $0.setExpanded(false) }
             else { $0.show($0.panel == .kana ? .numbers : .kana) }
         }
         toggle.titleLabel?.font = .systemFont(ofSize: 16)
@@ -445,9 +537,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let special = composing.isEmpty && (textDocumentProxy.returnKeyType ?? .default) != .default
         returnKey?.keyStyle = special ? .accent : .function
         returnKey?.applyAppearance(isDark: isDark)
-        if expanded {
+        if expanded || feedbackVisible {
             panelKey?.setTitle(katakana ? "カナ" : "かな", for: .normal)
-            panelKey?.accessibilityLabel = "收起候选，返回键盘"
+            panelKey?.accessibilityLabel = feedbackVisible ? "关闭反馈设置，返回键盘" : "收起候选，返回键盘"
         } else {
             panelKey?.setTitle(panel == .kana ? "123" : (katakana ? "カナ" : "かな"), for: .normal)
             panelKey?.accessibilityLabel = panel == .kana ? "数字键盘" : "假名键盘"
@@ -483,17 +575,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func show(_ next: Panel) {
+        setFeedbackVisible(false)
         setExpanded(false)
         panel = next
         rebuildKeys()
     }
 
     @objc private func toggleExpanded() {
-        guard !composing.isEmpty else { return }
-        setExpanded(!expanded)
+        feedback.keyPressed()
+        if composing.isEmpty { setFeedbackVisible(!feedbackVisible) }
+        else { setExpanded(!expanded) }
+    }
+
+    private func setFeedbackVisible(_ value: Bool) {
+        guard feedbackVisible != value else { return }
+        cancelInteractions()
+        feedbackVisible = value
+        if value { expanded = false }
+        feedbackPanel.isHidden = !value
+        keyRows.isHidden = value || expanded
+        expandedScroll.isHidden = value || !expanded
+        updateFeedbackPanel()
+        updateHeader()
+        updateBottomLabels()
     }
 
     private func setExpanded(_ value: Bool) {
+        if value { setFeedbackVisible(false) }
         if expanded != value { cancelInteractions() }
         expanded = value
         keyRows.isHidden = value
@@ -510,14 +618,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         draftButton.accessibilityLabel = composing.isEmpty ? "没有待确定的输入" : "待确定假名：\(composing)，点按原样确定"
         draftButton.accessibilityValue = composing
         draftButton.isEnabled = !composing.isEmpty
-        expandButton.setImage(UIImage(systemName: expanded ? "chevron.up" : "chevron.down",
+        let icon = composing.isEmpty ? (feedbackVisible ? "keyboard" : "gearshape")
+            : (expanded ? "chevron.up" : "chevron.down")
+        expandButton.setImage(UIImage(systemName: icon,
                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
-        expandButton.isEnabled = !composing.isEmpty
-        expandButton.alpha = composing.isEmpty ? 0.25 : 1
-        expandButton.accessibilityLabel = expanded ? "收起候选" : "展开候选"
+        expandButton.isEnabled = true
+        expandButton.alpha = 1
+        expandButton.accessibilityIdentifier = composing.isEmpty ? "feedback-settings-key" : "candidate-expand-key"
+        expandButton.accessibilityLabel = composing.isEmpty
+            ? (feedbackVisible ? "关闭反馈设置" : "按键反馈设置")
+            : (expanded ? "收起候选" : "展开候选")
     }
 
     private func append(_ text: String) {
+        setFeedbackVisible(false)
         composing += text
         refreshCandidates()
     }
@@ -529,28 +643,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func backspace() {
+        setFeedbackVisible(false)
         if composing.isEmpty { textDocumentProxy.deleteBackward() }
         else { composing.removeLast(); refreshCandidates() }
     }
 
     private func space() {
+        setFeedbackVisible(false)
         guard !composing.isEmpty else { textDocumentProxy.insertText(" "); return }
         commit(candidates.first?.text ?? composing)
     }
 
     private func enter() {
+        setFeedbackVisible(false)
         if composing.isEmpty { textDocumentProxy.insertText("\n") }
         else { commit(composing) }
     }
 
     @objc private func confirmDraft() {
         guard !composing.isEmpty else { return }
+        feedback.keyPressed()
         commit(composing)
     }
 
     private func commitLiteral(_ text: String) { commit(composing + text) }
 
     private func commit(_ text: String) {
+        setFeedbackVisible(false)
         resetDraft()
         textDocumentProxy.insertText(text)
     }
@@ -559,7 +678,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         composing = ""
         expanded = false
         if isViewLoaded {
-            keyRows.isHidden = false
+            keyRows.isHidden = feedbackVisible
             expandedScroll.isHidden = true
             refreshCandidates()
         }
@@ -602,6 +721,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let generation = candidateGeneration
         key.addAction(UIAction { [weak self] _ in
             guard let self = self, self.candidateGeneration == generation else { return }
+            self.feedback.keyPressed()
             self.commit(candidate.text)
         }, for: .touchUpInside)
         return key
@@ -618,7 +738,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 shortcut.setTitleColor(textColor.withAlphaComponent(0.7), for: .normal)
                 shortcut.widthAnchor.constraint(equalToConstant: 48).isActive = true
                 shortcut.accessibilityLabel = mark
-                shortcut.addAction(UIAction { [weak self] _ in self?.commitLiteral(mark) }, for: .touchUpInside)
+                shortcut.addAction(UIAction { [weak self] _ in
+                    self?.feedback.keyPressed()
+                    self?.commitLiteral(mark)
+                }, for: .touchUpInside)
                 candidateRow.addArrangedSubview(shortcut)
             }
         }
@@ -646,13 +769,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        composing.isEmpty && !expanded
+        composing.isEmpty && !expanded && !feedbackVisible
     }
 
     @objc private func moveCursor(_ gesture: UILongPressGestureRecognizer) {
         switch gesture.state {
         case .began:
             cursorMode = true
+            feedback.cursorModeEntered()
             cursorX = gesture.location(in: view).x
             keyRows.alpha = 0.4
             spaceKey?.cancelInteraction()

@@ -69,6 +69,32 @@ final class KeyboardUITests: XCTestCase {
         try key("delete-key").press(forDuration: 1.2)
         try expectValue("", in: editor)
 
+        try selectFirstHiraganaBoard()
+        let reading = try key("candidate-reading")
+        let q = try key("kana-key-Q")
+        // Release the original touch in the non-input header, outside Q. Press
+        // feedback must not turn a cancelled touch into a character insertion.
+        q.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo:
+                reading.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        try waitFor("A cancelled key drag inserted a draft") {
+            !reading.isEnabled && ((reading.value as? String) ?? "").isEmpty
+        }
+        try expectValue("", in: editor)
+
+        // Validate preferences and input behavior, not physical audio/haptics:
+        // the simulator cannot establish whether feedback is heard or felt.
+        try key("feedback-settings-key").tap()
+        try require(host.switches["feedback-sound-switch"].firstMatch,
+                    "Keyboard feedback settings did not open")
+        try setFeedbackSwitch("feedback-sound-switch", enabled: false)
+        try setFeedbackSwitch("feedback-haptics-switch", enabled: false)
+        try closeFeedbackSettings()
+        try key("kana-key-Q").tap()
+        try expectReading("あ")
+        try key("candidate-reading").tap()
+        try expectValue("あ", in: editor)
+
         // This launch argument only changes the host editor's keyboardAppearance
         // in DEBUG builds. The extension must read the real document proxy trait.
         host.terminate()
@@ -78,6 +104,37 @@ final class KeyboardUITests: XCTestCase {
         try require(darkEditor, "Host editor is missing after dark appearance launch")
         darkEditor.tap()
         try activateKanaKeyboard()
+        try key("feedback-settings-key").tap()
+        try require(host.switches["feedback-sound-switch"].firstMatch,
+                    "Feedback settings did not reopen after host relaunch")
+        try expectFeedbackSwitch("feedback-sound-switch", enabled: false)
+        try expectFeedbackSwitch("feedback-haptics-switch", enabled: false)
+        try setFeedbackSwitch("feedback-sound-switch", enabled: true)
+        try setFeedbackSwitch("feedback-haptics-switch", enabled: true)
+        try closeFeedbackSettings()
+
+        // Only after the ordinary no-access input path, grant the optional
+        // capability through Settings. Successful typing here exercises the
+        // public feedback APIs; it does not prove physical sound or vibration.
+        try enableFullAccessInSettings()
+        host.activate()
+        darkEditor.tap()
+        try activateKanaKeyboard()
+        try key("feedback-settings-key").tap()
+        let accessNote = try require(host.staticTexts["feedback-access-note"].firstMatch,
+                                     "Feedback access status is missing")
+        try waitFor("The keyboard did not observe its Full Access grant") {
+            accessNote.label.hasPrefix("声音遵循")
+        }
+        try expectFeedbackSwitch("feedback-sound-switch", enabled: true)
+        try expectFeedbackSwitch("feedback-haptics-switch", enabled: true)
+        screenshot("Kana23x2-feedback-settings")
+        try closeFeedbackSettings()
+        try selectFirstHiraganaBoard()
+        try key("kana-key-Q").tap()
+        try expectReading("あ")
+        try key("candidate-reading").tap()
+        try expectValue("あ", in: darkEditor)
         screenshot("Kana23x2-dark")
 
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -206,6 +263,50 @@ final class KeyboardUITests: XCTestCase {
         }
     }
 
+    private func enableFullAccessInSettings() throws {
+        // The earlier enrollment flow left Settings on this exact page.
+        settings.activate()
+        try require(settings.navigationBars["Keyboards"],
+                    "Settings did not retain the enabled Keyboards page", application: settings)
+        try tapKanaSettingsRow()
+        let control = try require(settings.switches["Allow Full Access"].firstMatch,
+                                  "Allow Full Access is missing for the Kana keyboard",
+                                  application: settings)
+        if (control.value as? String) != "1" {
+            control.tap()
+            let allow = try require(settings.alerts.buttons["Allow"].firstMatch,
+                                    "The Full Access confirmation did not appear", application: settings)
+            allow.tap()
+        }
+        try waitFor("Settings did not enable Full Access", application: settings) {
+            (control.value as? String) == "1"
+        }
+    }
+
+    private func setFeedbackSwitch(_ identifier: String, enabled: Bool) throws {
+        let control = try require(host.switches[identifier].firstMatch,
+                                  "Missing keyboard feedback switch: \(identifier)")
+        if (control.value as? String) != (enabled ? "1" : "0") { control.tap() }
+        try expectFeedbackSwitch(identifier, enabled: enabled)
+    }
+
+    private func expectFeedbackSwitch(_ identifier: String, enabled: Bool) throws {
+        let control = try require(host.switches[identifier].firstMatch,
+                                  "Missing keyboard feedback switch: \(identifier)")
+        try waitFor("\(identifier) should be \(enabled ? "on" : "off")") {
+            (control.value as? String) == (enabled ? "1" : "0")
+        }
+    }
+
+    private func closeFeedbackSettings() throws {
+        try key("feedback-settings-key").tap()
+        try waitFor("Keyboard feedback settings did not close") {
+            !self.host.descendants(matching: .any)["feedback-settings-panel"].firstMatch.exists
+        }
+        try require(host.descendants(matching: .any)["kana-key-Q"].firstMatch,
+                    "Kana keys did not return after closing feedback settings")
+    }
+
     @discardableResult
     private func require(_ element: XCUIElement, _ message: String,
                          timeout: TimeInterval = 10,
@@ -234,12 +335,13 @@ final class KeyboardUITests: XCTestCase {
     }
 
     private func waitFor(_ message: String, timeout: TimeInterval = 10,
+                         application: XCUIApplication? = nil,
                          condition: @escaping () -> Bool) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in condition() }, object: nil)
         let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
         if result != .completed {
-            attachHierarchy(host, name: "Keyboard assertion failure")
+            attachHierarchy(application ?? host, name: "Keyboard assertion failure")
             XCTFail(message)
             throw UIError.missing(message)
         }

@@ -16,6 +16,10 @@ final class KeyboardKeyButton: UIButton {
     /// Capture the controller weakly when assigning these callbacks.
     var onPress: (() -> Void)?
 
+    /// One feedback event per touch-down/repeat/accessibility activation.
+    /// Keep this separate from onPress, because ordinary input commits on release.
+    var onFeedback: (() -> Void)?
+
     /// The controller owns the preview bubble and keeps it inside the keyboard.
     /// Character keys report true while tracked inside, and false on every exit.
     var onPreviewChange: ((Bool) -> Void)?
@@ -165,6 +169,7 @@ final class KeyboardKeyButton: UIButton {
         holdCancelled = false
         releaseAllowed = false
         updatePreview()
+        if fingerInside { onFeedback?() }
         if repeatingGesture && fingerInside {
             // Arm first: onPress may synchronously hide/remove this key, which
             // cancels the timer through the view-lifecycle overrides below.
@@ -220,6 +225,7 @@ final class KeyboardKeyButton: UIButton {
     override func accessibilityActivate() -> Bool {
         guard isEnabled, let onPress = onPress else { return super.accessibilityActivate() }
         cancelInteraction()
+        onFeedback?()
         onPress()
         return true
     }
@@ -255,6 +261,7 @@ final class KeyboardKeyButton: UIButton {
         let timer = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self = self, self.canRepeat(generation: generation) else { return }
             self.stopTimer()
+            self.onFeedback?()
             self.onPress?()
             guard self.canRepeat(generation: generation) else { return }
             let repeating = Timer(timeInterval: 0.075, repeats: true) { [weak self] timer in
@@ -262,6 +269,7 @@ final class KeyboardKeyButton: UIButton {
                     timer.invalidate()
                     return
                 }
+                self.onFeedback?()
                 self.onPress?()
             }
             self.repeatTimer = repeating

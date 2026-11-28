@@ -2,6 +2,17 @@ name: Build iOS
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a new iOS release only after this run passes all tests
+        required: true
+        default: false
+        type: boolean
+      tag:
+        description: New release tag; must match the iOS app version
+        required: true
+        default: v0.3.0
+        type: string
   push:
     branches: [main, 'codex/ios-*']
   pull_request:
@@ -10,8 +21,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ios-${{ inputs.publish && format('release-{0}', inputs.tag) || github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
 
 jobs:
   build:
@@ -19,6 +30,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Validate requested release version
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          versions = re.findall(r"^\s+MARKETING_VERSION:\s*['\"]?([\d.]+)['\"]?\s*$", Path('ios/project.yml').read_text(), re.M)
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag) or versions != [tag[1:]]:
+              raise SystemExit('Release tag must be vMAJOR.MINOR.PATCH and match ios/project.yml MARKETING_VERSION')
+          if not Path(f'docs/releases/{tag}.md').is_file():
+              raise SystemExit('Release notes for the requested tag are missing')
+          PY
       - name: Test dictionary generator and IPA packaging
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
       - name: Test Swift keyboard core
@@ -96,6 +122,37 @@ jobs:
             ios/build/KeyboardUITests.zip
             ios/build/ui-attachments/
           if-no-files-found: ignore
+      - name: Collect native keyboard screenshots from successful UI tests
+        run: |
+          python3 - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          root = Path('ios/build/ui-attachments')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          destination = Path('ios/build/native-screenshots')
+          destination.mkdir()
+          for appearance in ('light', 'dark', 'landscape', 'feedback-settings'):
+              prefix = 'Kana23x2-' + appearance
+              matches = [attachment for test in manifest
+                         if test['testIdentifier'] == 'KeyboardUITests/testInstalledKeyboardCompositionAndAppearance()'
+                         for attachment in test['attachments']
+                         if attachment.get('suggestedHumanReadableName', '').startswith(prefix)
+                         and attachment.get('exportedFileName', '').endswith('.png')]
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected exactly one {prefix} screenshot, found {len(matches)}')
+              filename = matches[0]['exportedFileName']
+              if Path(filename).name != filename:
+                  raise SystemExit('Screenshot manifest contains an invalid filename')
+              source = root / filename
+              if not source.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+                  raise SystemExit(f'Invalid PNG screenshot: {filename}')
+              shutil.copyfile(source, destination / (prefix + '.png'))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kana23x2-native-screenshots
+          path: ios/build/native-screenshots/*.png
+          if-no-files-found: error
       - name: Explain SideStore installation
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
@@ -104,5 +161,156 @@ jobs:
           Import **Kana23x2-unsigned.ipa** into SideStore; keep the **KanaKeyboard** app extension if prompted.
           SideStore must sign both the host app and its keyboard extension. No local Mac or Xcode is needed.
           Enable **23×2 Kana** in Settings → General → Keyboard → Keyboards → Add New Keyboard.
-          Full Access is not required. Device installation and keyboard interaction still need testing on an iPhone.
+          Full Access is not required for offline typing or visual key feedback.
+          Optional key clicks and vibration require Full Access; enable them separately from the keyboard's gear panel.
+          Device installation, sound, vibration and keyboard interaction still need testing on an iPhone.
           EOF
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && needs.build.result == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: Kana23x2-iOS
+          path: artifacts/ios
+      - uses: actions/download-artifact@v4
+        with:
+          name: Kana23x2-native-screenshots
+          path: artifacts/screenshots
+      - name: Verify same-run IPA and prepare iOS-only release assets
+        run: |
+          (cd artifacts/ios && sha256sum --check Kana23x2-unsigned.ipa.sha256)
+          python3 tools/package_ios_ipa.py --verify artifacts/ios/Kana23x2-unsigned.ipa --require-full-dictionary
+          python3 - <<'PY'
+          import hashlib, json, os, plistlib, re, shutil, subprocess, zipfile
+          from pathlib import Path
+          tag, commit, repo = os.environ['RELEASE_TAG'], os.environ['GITHUB_SHA'], os.environ['GH_REPO']
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != commit:
+              raise SystemExit('Checked-out source differs from the tested commit')
+          versions = re.findall(r"^\s+MARKETING_VERSION:\s*['\"]?([\d.]+)['\"]?\s*$", Path('ios/project.yml').read_text(), re.M)
+          builds = re.findall(r"^\s+CURRENT_PROJECT_VERSION:\s*['\"]?(\d+)['\"]?\s*$", Path('ios/project.yml').read_text(), re.M)
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag) or versions != [tag[1:]] or len(builds) != 1:
+              raise SystemExit('Requested tag and iOS project versions do not match')
+          root = Path('release-files')
+          root.mkdir()
+          for source, name, prefix in (
+              ('Kana23x2-unsigned.ipa', f'Kana23x2-{tag}-ios-unsigned.ipa', 'Payload/'),
+              ('Kana23x2-simulator.zip', f'Kana23x2-{tag}-ios-simulator.zip', ''),
+          ):
+              artifact = Path('artifacts/ios') / source
+              with zipfile.ZipFile(artifact) as archive:
+                  if archive.testzip():
+                      raise SystemExit(f'Corrupt artifact: {source}')
+                  for bundle in ('Kana23x2.app', 'Kana23x2.app/PlugIns/KanaKeyboard.appex'):
+                      info = plistlib.loads(archive.read(prefix + bundle + '/Info.plist'))
+                      if (info['CFBundleShortVersionString'], info['CFBundleVersion']) != (tag[1:], builds[0]):
+                          raise SystemExit(f'Artifact bundle version differs from release tag/project: {source}/{bundle}')
+              shutil.copyfile(artifact, root / name)
+          for appearance in ('light', 'dark', 'landscape', 'feedback-settings'):
+              source = Path('artifacts/screenshots') / f'Kana23x2-{appearance}.png'
+              if not source.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+                  raise SystemExit(f'Invalid screenshot: {source}')
+              shutil.copyfile(source, root / f'Kana23x2-{tag}-{appearance}.png')
+          run_url = f'{os.environ["GITHUB_SERVER_URL"]}/{repo}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+          info = {'platform': 'iOS', 'tag': tag, 'version': tag[1:], 'build': builds[0],
+                  'commit': commit, 'repository': repo, 'workflow': '.github/workflows/ios.yml',
+                  'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                  'run_url': run_url, 'device_package_signed': False,
+                  'validation': ['Python tests', 'Swift core tests', 'iOS simulator build',
+                                 'iOS device build', 'installed keyboard simulator UI tests', 'IPA/full dictionary verification']}
+          (root / 'BUILD-INFO.json').write_text(json.dumps(info, ensure_ascii=False, indent=2) + '\n')
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          files = sorted(root.iterdir())
+          (root / 'SHA256SUMS.txt').write_text(''.join(f'{digest(path)}  {path.name}\n' for path in files))
+          expected = {path.name: {'size': path.stat().st_size, 'digest': 'sha256:' + digest(path)} for path in root.iterdir()}
+          Path('expected-assets.json').write_text(json.dumps(expected))
+          body = Path(f'docs/releases/{tag}.md').read_text()
+          body += f'\n\n## 构建记录\n\n- 源提交：[`{commit}`]({os.environ["GITHUB_SERVER_URL"]}/{repo}/commit/{commit})\n- [通过测试的构建运行]({run_url})（第 {os.environ["GITHUB_RUN_ATTEMPT"]} 次运行）\n'
+          body += '\n截图来自同次构建安装的真实 iOS 模拟器键盘扩展：\n'
+          for appearance, label in (('light', '浅色'), ('dark', '深色'), ('landscape', '横屏'), ('feedback-settings', '按键反馈设置')):
+              body += f'\n![{label}]({os.environ["GITHUB_SERVER_URL"]}/{repo}/releases/download/{tag}/Kana23x2-{tag}-{appearance}.png)\n'
+          Path('release-create.json').write_text(json.dumps({'tag_name': tag, 'target_commitish': commit,
+              'name': '23×2 Kana ' + tag + ' · iOS', 'body': body, 'draft': True, 'prerelease': False}))
+          PY
+      - name: Create a new draft without replacing any existing release or tag
+        id: release
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          repo, tag = os.environ['GH_REPO'], os.environ['RELEASE_TAG']
+          # Enumerate drafts as well as published releases before creating anything.
+          pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100']))
+          if any(release['tag_name'] == tag for page in pages for release in page):
+              raise SystemExit('Release tag already has a release/draft; refusing to overwrite it')
+          ref = subprocess.run(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], capture_output=True, text=True)
+          if ref.returncode == 0:
+              raise SystemExit('Tag already exists; refusing to reuse or move it')
+          if 'HTTP 404' not in ref.stderr:
+              raise SystemExit(ref.stderr)
+          release = json.loads(subprocess.check_output(['gh', 'api', '--method', 'POST',
+              f'repos/{repo}/releases', '--input', 'release-create.json']))
+          if (release['tag_name'], release['target_commitish'], release['draft']) != (tag, os.environ['GITHUB_SHA'], True):
+              raise SystemExit('New draft does not match the tested commit')
+          Path('created-release.json').write_text(json.dumps(release))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'release_id={release["id"]}\n')
+          PY
+      - name: Upload new assets without clobbering
+        run: gh release upload "$RELEASE_TAG" release-files/*
+      - name: Verify uploaded hashes and publish tested iOS release
+        env:
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          repo, tag, commit = os.environ['GH_REPO'], os.environ['RELEASE_TAG'], os.environ['GITHUB_SHA']
+          endpoint = f'repos/{repo}/releases/{os.environ["RELEASE_ID"]}'
+          def get(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path]))
+          release = get(endpoint)
+          created = json.loads(Path('created-release.json').read_text())
+          if (release['tag_name'], release['target_commitish'], release['draft'], release['body']) != (tag, commit, True, created['body']):
+              raise SystemExit('Draft release changed during asset upload')
+          expected = json.loads(Path('expected-assets.json').read_text())
+          actual = {asset['name']: {'size': asset['size'], 'digest': asset.get('digest')} for asset in release['assets']}
+          if actual != expected or any(asset['state'] != 'uploaded' for asset in release['assets']):
+              raise SystemExit('Uploaded asset names, sizes or SHA-256 digests do not match')
+          ref = subprocess.run(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], capture_output=True, text=True)
+          if ref.returncode == 0:
+              obj = json.loads(ref.stdout)['object']
+              while obj['type'] == 'tag':
+                  obj = get(f'repos/{repo}/git/tags/{obj["sha"]}')['object']
+              if (obj['type'], obj['sha']) != ('commit', commit):
+                  raise SystemExit('Tag no longer points to the tested commit')
+          elif 'HTTP 404' not in ref.stderr:
+              raise SystemExit(ref.stderr)
+          Path('release-publish.json').write_text(json.dumps({'draft': False, 'target_commitish': commit, 'make_latest': 'true'}))
+          published = json.loads(subprocess.check_output(['gh', 'api', '--method', 'PATCH', endpoint, '--input', 'release-publish.json']))
+          if published['draft'] or published['tag_name'] != tag or published['target_commitish'] != commit:
+              raise SystemExit('Published release differs from the tested commit')
+          obj = get(f'repos/{repo}/git/ref/tags/{tag}')['object']
+          while obj['type'] == 'tag':
+              obj = get(f'repos/{repo}/git/tags/{obj["sha"]}')['object']
+          if (obj['type'], obj['sha']) != ('commit', commit):
+              raise SystemExit('Published tag differs from the tested commit')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'## Published iOS release\n\n[{tag}]({published["html_url"]})\n\nTested commit: `{commit}`\n')
+          print(published['html_url'])
+          PY
