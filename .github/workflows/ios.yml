@@ -106,7 +106,7 @@ jobs:
             -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath ios/build/uitest -resultBundlePath ios/build/KeyboardUITests.xcresult \
             -parallel-testing-enabled NO -test-timeouts-enabled YES \
-            -maximum-test-execution-time-allowance 300 CODE_SIGNING_ALLOWED=NO
+            -maximum-test-execution-time-allowance 360 CODE_SIGNING_ALLOWED=NO
       - name: Export simulator test screenshots
         if: always()
         run: |

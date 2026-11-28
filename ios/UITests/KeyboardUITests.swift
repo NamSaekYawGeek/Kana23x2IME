@@ -264,10 +264,14 @@ final class KeyboardUITests: XCTestCase {
     }
 
     private func enableFullAccessInSettings() throws {
-        // The earlier enrollment flow left Settings on this exact page.
         settings.activate()
+        // Preferences can return to its root while the host is relaunched.
+        // Reuse the enrollment navigation; it preserves an enabled keyboard.
+        if !settings.navigationBars["Keyboards"].exists {
+            try enableKeyboardInSettings()
+        }
         try require(settings.navigationBars["Keyboards"],
-                    "Settings did not retain the enabled Keyboards page", application: settings)
+                    "Settings did not open the enabled Keyboards page", application: settings)
         try tapKanaSettingsRow()
         let control = try require(settings.switches["Allow Full Access"].firstMatch,
                                   "Allow Full Access is missing for the Kana keyboard",
