@@ -16,7 +16,7 @@
             <key>IsASCIICapable</key><false/>
             <key>PrefersRightToLeft</key><false/>
             <key>PrimaryLanguage</key><string>ja-JP</string>
-            <key>RequestsOpenAccess</key><false/>
+            <key>RequestsOpenAccess</key><true/>
         </dict>
     </dict>
 </dict></plist>

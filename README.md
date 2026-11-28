@@ -2,20 +2,26 @@
 
 23×2 Kana 使用两套各 23 个位置的假名板，在熟悉的 QWERTY 布局上直接输入日语假名。Android 版基于系统输入法服务，iOS 版提供系统键盘扩展；两端均可离线进行假名到汉字的转换。
 
-当前版本为 **v0.2.0**。这是供安装体验和继续开发的键盘原型，转换质量仍需完善，尚未完成真机交互验收。
+当前 iOS 版本为 **v0.3.0**，Android 版本为 **v0.2.0**。这是供安装体验和继续开发的键盘原型，转换质量仍需完善，尚未完成真机交互验收。
+
+### iOS 0.3.0
+
+iOS 界面改为更接近系统键盘的键帽、浅色／深色配色、按下高亮与字符预览；候选栏可横向滚动或展开。数字／符号使用横排布局。Z 继续切换两板，⇧ 继续切换平／片假名，X／C 的规则不变。
+
+按住删除键可连续删除；没有待确定文字时，长按空格并左右拖动可移动光标。新增系统点击音、轻触震动及字符预览松手淡出；点候选栏的齿轮可分别设置声音和震动。候选确认与转换仍使用项目自己的离线词典和引擎，不接用苹果日语输入法。
 
 ## 下载与安装
 
-前往 [v0.2.0 发布页面](https://github.com/NamSaekYawGeek/Kana23x2IME/releases/tag/v0.2.0) 下载对应平台的文件。
+前往 [iOS v0.3.0 发布页面](https://github.com/NamSaekYawGeek/Kana23x2IME/releases/tag/v0.3.0) 或 [Android v0.2.0 发布页面](https://github.com/NamSaekYawGeek/Kana23x2IME/releases/tag/v0.2.0) 下载对应平台的文件。
 
-**SideStore 用户：** v0.2.0 的历史发布文件只有 `.app` ZIP；本次更新后的 **Build iOS** 工作流会额外生成 `Kana23x2-unsigned.ipa`。请从包含这项更新的成功构建中下载，具体步骤见下文。
+**SideStore 用户：** 下载 `Kana23x2-v0.3.0-ios-unsigned.ipa`，导入 SideStore 后保留键盘扩展。
 
 | 产物 | 用途 |
 | --- | --- |
 | Android APK | 调试签名的安装包，适用于 Android 8.0 及以上 |
 | iOS 模拟器 ZIP | 解压后得到 `.app`，供 Mac 上的 iOS 模拟器使用 |
 | iOS 未签名真机 ZIP | 解压后得到 `.app`，需自行签名后才能安装到 iPhone / iPad |
-| iOS 未签名 IPA（更新后的 Actions 构建） | 可导入 SideStore，由 SideStore 为主 App 和键盘扩展签名后安装 |
+| iOS 未签名 IPA | 可导入 SideStore，由 SideStore 为主 App 和键盘扩展签名后安装 |
 
 ### Android
 
@@ -29,16 +35,18 @@
 
 支持 iOS 15 及以上。已有可用的 SideStore 时，**不需要本地 Mac 或 Xcode**：GitHub Actions 使用云端 macOS/Xcode 编译，SideStore 负责在你的 iPhone 上签名并安装。
 
-1. 在仓库 **Actions → Build iOS → Run workflow** 中选择包含 IPA 打包更新的分支并运行；也可以打开该分支已有的成功构建。
-2. 在构建页面底部 **Artifacts** 下载 `Kana23x2-iOS`（下载 Actions 产物需要登录 GitHub）。解压外层 ZIP，找到 **`Kana23x2-unsigned.ipa`**。
+1. 在 iOS Release 页面下载 **`Kana23x2-v0.3.0-ios-unsigned.ipa`**。
+2. 若使用开发分支，也可从成功的 **Actions → Build iOS** 构建下载 `Kana23x2-iOS`（需要登录 GitHub），解压外层 ZIP 后使用 **`Kana23x2-unsigned.ipa`**。
 3. 在 SideStore 的 **My Apps** 中点 **＋**，选择该 IPA。若提示是否移除 App Extensions，选择**保留 `KanaKeyboard` 键盘扩展**；移除后只能安装主 App，无法添加键盘。
 4. 等待 SideStore 完成主 App 和扩展的签名与安装，再按下面的步骤启用键盘。
 
 IPA 是未签名的安装容器，不能通过「文件」App 直接点开安装。SideStore 需要正常工作的账号、配对和签名配置；键盘扩展也需要独立的 App ID/描述文件，受账号额度限制。若提示 App ID 额度或签名失败，请保留错误信息排查，勿通过删除键盘扩展解决。按 SideStore 显示的有效期续签即可。
 
-项目不使用 App Groups、不请求完全访问，也不需要把 Apple 账号或证书放进 GitHub。自动化构建和 IPA 校验不等于真机验收，SideStore 安装与键盘交互仍需在 iPhone 上实测。
+项目不使用 App Groups、不联网，也不需要把 Apple 账号或证书放进 GitHub。声音和震动使用可选的完全访问权限。自动化构建和 IPA 校验不等于真机验收，SideStore 安装、实际声音和触感仍需在 iPhone 上实测。
 
-安装宿主 App 后，前往 **设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 23×2 Kana**。在输入框中长按 🌐 切换键盘，无需开启“允许完全访问”。
+安装宿主 App 后，前往 **设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 23×2 Kana**。在输入框中长按 🌐 切换键盘。离线输入和视觉反馈无需开启“允许完全访问”；若需要声音和震动，再在该键盘设置中开启。
+
+没有待确定文字时，点键盘顶部齿轮可分别开关声音和轻触震动。声音使用系统输入点击接口，遵循系统键盘声音设置；触感使用这里的独立开关，受设备和系统限制，不同步苹果系统键盘的“触感”开关。
 
 模拟器安装包解压后，可在已启动的模拟器中安装：
 
@@ -90,7 +98,7 @@ Android 还包括：
 - 3×4 数字键盘，以及日文、数学、箭头、图形、单位／货币、希腊字母、国际音标和假名扩展符号面板。
 - 未申请 `INTERNET` 权限。
 
-iOS 首版尚未实现个人学习、最近词和剪贴板历史，不请求完全访问，也不联网。完整词典使用内存映射和二分查找，以减少键盘扩展中的内存占用。
+iOS 版尚未实现个人学习、最近词和剪贴板历史，也不联网。完全访问仅用于可选声音和震动；完整词典使用内存映射和二分查找，以减少键盘扩展中的内存占用。
 
 ## v0.2.0 修复内容
 

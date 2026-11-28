@@ -10,8 +10,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '0.2.0'
-    CURRENT_PROJECT_VERSION: '2'
+    MARKETING_VERSION: '0.3.0'
+    CURRENT_PROJECT_VERSION: '4'
     TARGETED_DEVICE_FAMILY: '1,2'
     CODE_SIGN_STYLE: Automatic
 targets:
@@ -44,6 +44,18 @@ targets:
         SKIP_INSTALL: YES
     dependencies:
       - package: KanaCore
+  KanaKeyboardUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kana23x2.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Kana23x2
+    dependencies:
+      - target: Kana23x2
 schemes:
   Kana23x2:
     build:
@@ -53,3 +65,7 @@ schemes:
       config: Debug
     archive:
       config: Release
+    test:
+      config: Debug
+      targets:
+        - KanaKeyboardUITests
